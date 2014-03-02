@@ -10,16 +10,14 @@
 
 #[allow(missing_doc)];
 
-use extra::digest::Digest;
-use extra::json;
-use extra::json::ToJson;
-use extra::sha1::Sha1;
-use extra::serialize::{Encoder, Encodable, Decoder, Decodable};
-use extra::arc::{Arc,RWArc};
-use extra::treemap::TreeMap;
-use std::cell::Cell;
-use std::comm::{PortOne, oneshot};
-use std::{io, os, task};
+use serialize::json;
+use serialize::json::ToJson;
+use serialize::{Encoder, Encodable, Decoder, Decodable};
+use sync::{Arc,RWArc};
+use collections::TreeMap;
+use std::str;
+use std::io;
+use std::io::{File, MemWriter};
 
 /**
 *
@@ -107,42 +105,41 @@ impl WorkKey {
 // FIXME #8883: The key should be a WorkKey and not a ~str.
 // This is working around some JSON weirdness.
 #[deriving(Clone, Eq, Encodable, Decodable)]
-struct WorkMap(TreeMap<~str, KindMap>);
-
-impl<'self> ToJson for &'self WorkMap {
-    fn to_json(&self) -> json::Json {
-        (**self).to_json()
-    }
-}
+pub struct WorkMap(TreeMap<~str, KindMap>);
 
 #[deriving(Clone, Eq, Encodable, Decodable)]
-struct KindMap(TreeMap<~str, ~str>);
-
-impl ToJson for KindMap {
-    fn to_json(&self) -> json::Json {
-        (**self).to_json()
-    }
-}
+pub struct KindMap(TreeMap<~str, ~str>);
 
 impl WorkMap {
     fn new() -> WorkMap { WorkMap(TreeMap::new()) }
 
-    fn insert_work_key(&mut self, k: WorkKey, val: ~str) {
+    fn insert_work_key<
+        'a,
+        T: Encodable<json::Encoder<'a>>
+    >(&mut self, k: WorkKey, value: &T) {
         let WorkKey { kind, name } = k;
-        match self.find_mut(&name) {
-            Some(&KindMap(ref mut m)) => { m.insert(kind, val); return; }
-            None => ()
+        let value = json_encode(value);
+
+        let WorkMap(ref mut map) = *self;
+
+        match map.find_mut(&name) {
+            Some(&KindMap(ref mut m)) => {
+                m.insert(kind, value);
+                return;
+            }
+            None => {}
         }
+
         let mut new_map = TreeMap::new();
-        new_map.insert(kind, val);
-        self.insert(name, KindMap(new_map));
+        new_map.insert(kind, value);
+        map.insert(name, KindMap(new_map));
     }
 }
 
 pub struct Database {
-    db_filename: Path,
-    db_cache: TreeMap<~str, json::Json>,
-    db_dirty: bool
+    priv db_filename: Path,
+    priv db_cache: TreeMap<~str, ~str>,
+    priv db_dirty: bool
 }
 
 impl Database {
@@ -152,7 +149,7 @@ impl Database {
             db_cache: TreeMap::new(),
             db_dirty: false
         };
-        if os::path_exists(&db.db_filename) {
+        if db.db_filename.exists() {
             db.load();
         }
         db
@@ -165,7 +162,7 @@ impl Database {
         let k = json_encode(&(fn_name, declared_inputs));
         match self.db_cache.find(&k) {
             None => None,
-            Some(v) => Some(json_decode(v))
+            Some(v) => Some(json_decode(*v))
         }
     }
 
@@ -174,40 +171,37 @@ impl Database {
                  declared_inputs: &WorkMap,
                  discovered_inputs: &WorkMap,
                  discovered_outputs: &WorkMap,
-                 result: json::Object) {
+                 result: &str) {
         let k = json_encode(&(fn_name, declared_inputs));
-        let v = (discovered_inputs, discovered_outputs, result).to_json();
+        let v = json_encode(&(discovered_inputs,
+                              discovered_outputs,
+                              result));
         self.db_cache.insert(k,v);
         self.db_dirty = true
     }
 
     // FIXME #4330: This should have &mut self and should set self.db_dirty to false.
-    fn save(&self) {
-        let f = io::file_writer(&self.db_filename, [io::Create, io::Truncate]).unwrap();
-        self.db_cache.to_json().to_pretty_writer(f);
+    fn save(&self) -> io::IoResult<()> {
+        let mut f = File::create(&self.db_filename);
+        self.db_cache.to_json().to_pretty_writer(&mut f)
     }
 
     fn load(&mut self) {
         assert!(!self.db_dirty);
-        assert!(os::path_exists(&self.db_filename));
-        let f = io::file_reader(&self.db_filename);
-        match f {
-            Err(e) => fail!("Couldn't load workcache database %s: %s",
-                            self.db_filename.to_str(), e.to_str()),
-            Ok(r) =>
-                match json::from_reader(r) {
-                    Err(e) => fail!("Couldn't parse workcache database (from file %s): %s",
-                                    self.db_filename.to_str(), e.to_str()),
+        assert!(self.db_filename.exists());
+        match File::open(&self.db_filename) {
+            Err(e) => fail!("Couldn't load workcache database {}: {}",
+                            self.db_filename.display(),
+                            e),
+            Ok(mut stream) => {
+                match json::from_reader(&mut stream) {
+                    Err(e) => fail!("Couldn't parse workcache database (from file {}): {}",
+                                    self.db_filename.display(), e.to_str()),
                     Ok(r) => {
-                        match r {
-                            json::Object(db_cache) => { self.db_cache = *db_cache; }
-                            _ => fail!()
-                        }
-                        /*
-                        let mut decoder = json::Decoder(r);
+                        let mut decoder = json::Decoder::new(r);
                         self.db_cache = Decodable::decode(&mut decoder);
-                        */
                     }
+                }
             }
         }
     }
@@ -217,7 +211,8 @@ impl Database {
 impl Drop for Database {
     fn drop(&mut self) {
         if self.db_dirty {
-            self.save();
+            // FIXME: is failing the right thing to do here
+            self.save().unwrap();
         }
     }
 }
@@ -228,7 +223,6 @@ pub struct Logger {
 }
 
 impl Logger {
-
     pub fn new() -> Logger {
         Logger { a: () }
     }
@@ -242,69 +236,57 @@ pub type FreshnessMap = TreeMap<~str,extern fn(&str,&str)->bool>;
 
 #[deriving(Clone)]
 pub struct Context {
-    db: RWArc<Database>,
-    logger: RWArc<Logger>,
-    cfg: Arc<json::Object>,
+    priv db: RWArc<Database>,
+    priv logger: RWArc<Logger>,
+    priv cfg: Arc<json::Object>,
     /// Map from kinds (source, exe, url, etc.) to a freshness function.
     /// The freshness function takes a name (e.g. file path) and value
     /// (e.g. hash of file contents) and determines whether it's up-to-date.
     /// For example, in the file case, this would read the file off disk,
     /// hash it, and return the result of comparing the given hash and the
     /// read hash for equality.
-    freshness: Arc<FreshnessMap>
+    priv freshness: Arc<FreshnessMap>
 }
 
-pub struct Prep<'self> {
-    ctxt: &'self Context,
-    fn_name: &'self str,
-    declared_inputs: WorkMap,
+pub struct Prep<'a> {
+    priv ctxt: &'a Context,
+    priv fn_name: &'a str,
+    priv declared_inputs: WorkMap,
 }
 
 pub struct Exec {
-    discovered_inputs: WorkMap,
-    discovered_outputs: WorkMap
+    priv discovered_inputs: WorkMap,
+    priv discovered_outputs: WorkMap
 }
 
-enum Work<'self, T> {
+enum Work<'a, T> {
     WorkValue(T),
-    WorkFromTask(&'self Prep<'self>, PortOne<(Exec, T)>),
+    WorkFromTask(&'a Prep<'a>, Port<(Exec, T)>),
 }
 
-fn json_encode<T:Encodable<json::Encoder>>(t: &T) -> ~str {
-    do io::with_str_writer |wr| {
-        let mut encoder = json::Encoder(wr);
-        t.encode(&mut encoder);
-    }
+fn json_encode<'a, T:Encodable<json::Encoder<'a>>>(t: &T) -> ~str {
+    let mut writer = MemWriter::new();
+    let mut encoder = json::Encoder::new(&mut writer);
+    t.encode(&mut encoder);
+    str::from_utf8_owned(writer.unwrap()).unwrap()
 }
 
 // FIXME(#5121)
-fn json_decode<T:Decodable<json::Decoder>>(j: &json::Json) -> T {
-    let mut decoder = json::Decoder(*j);
+fn json_decode<T:Decodable<json::Decoder>>(s: &str) -> T {
+    let j = json::from_str(s).unwrap();
+    let mut decoder = json::Decoder::new(j);
     Decodable::decode(&mut decoder)
-}
-
-pub fn digest<T:Encodable<json::Encoder>>(t: &T) -> ~str {
-    let mut sha = ~Sha1::new();
-    (*sha).input_str(json_encode(t));
-    (*sha).result_str()
-}
-
-pub fn digest_path(path: &Path) -> ~str {
-    let mut sha = ~Sha1::new();
-    let s = io::read_whole_file(path);
-    (*sha).input(s.unwrap());
-    (*sha).result_str()
 }
 
 impl Context {
     pub fn new(db: Database) -> Context {
-        Context::new_with(db, Logger::new(), TreeMap::new(), TreeMap::new())
+        Context::new_with_freshness(db, Logger::new(), TreeMap::new(), TreeMap::new())
     }
 
-    pub fn new_with(db: Database,
-                    logger: Logger,
-                    cfg: json::Object,
-                    freshness: FreshnessMap) -> Context {
+    pub fn new_with_freshness(db: Database,
+                              logger: Logger,
+                              cfg: json::Object,
+                              freshness: FreshnessMap) -> Context {
         Context {
             db: RWArc::new(db),
             logger: RWArc::new(logger),
@@ -317,7 +299,7 @@ impl Context {
         Prep::new(self, fn_name)
     }
 
-    pub fn with_prep<'a, T>(&'a self, fn_name: &'a str, blk: &fn(p: &mut Prep) -> T) -> T {
+    pub fn with_prep<'a, T>(&'a self, fn_name: &'a str, blk: |p: &mut Prep| -> T) -> T {
         let mut p = self.prep(fn_name);
         blk(&mut p)
     }
@@ -325,28 +307,29 @@ impl Context {
 }
 
 impl Exec {
-    pub fn discover_input(&mut self,
-                          dependency_kind: &str,
-                          dependency_name: &str,
-                          dependency_val: &str) {
-        debug!("Discovering input %s %s %s", dependency_kind, dependency_name, dependency_val);
-        self.discovered_inputs.insert_work_key(WorkKey::new(dependency_kind, dependency_name),
-                                 dependency_val.to_owned());
+    pub fn discover_input<
+        'a,
+        T: Encodable<json::Encoder<'a>>
+    >(&mut self, kind: &str, name: &str, value: &T) {
+        debug!("Discovering input {} {} {:?}", kind, name, value);
+        self.discovered_inputs.insert_work_key(WorkKey::new(kind, name), value)
     }
-    pub fn discover_output(&mut self,
-                           dependency_kind: &str,
-                           dependency_name: &str,
-                           dependency_val: &str) {
-        debug!("Discovering output %s %s %s", dependency_kind, dependency_name, dependency_val);
-        self.discovered_outputs.insert_work_key(WorkKey::new(dependency_kind, dependency_name),
-                                 dependency_val.to_owned());
+
+    pub fn discover_output<
+        'a,
+        T: Encodable<json::Encoder<'a>>
+    >(&mut self, kind: &str, name: &str, value: &T) {
+        debug!("Discovering output {} {} {:?}", kind, name, value);
+        self.discovered_outputs.insert_work_key(WorkKey::new(kind, name), value);
     }
 
     // returns pairs of (kind, name)
     pub fn lookup_discovered_inputs(&self) -> ~[(~str, ~str)] {
         let mut rs = ~[];
-        for (k, v) in self.discovered_inputs.iter() {
-            for (k1, _) in v.iter() {
+        let WorkMap(ref discovered_inputs) = self.discovered_inputs;
+        for (k, v) in discovered_inputs.iter() {
+            let KindMap(ref vmap) = *v;
+            for (k1, _) in vmap.iter() {
                 rs.push((k1.clone(), k.clone()));
             }
         }
@@ -354,8 +337,8 @@ impl Exec {
     }
 }
 
-impl<'self> Prep<'self> {
-    fn new(ctxt: &'self Context, fn_name: &'self str) -> Prep<'self> {
+impl<'a> Prep<'a> {
+    fn new(ctxt: &'a Context, fn_name: &'a str) -> Prep<'a> {
         Prep {
             ctxt: ctxt,
             fn_name: fn_name,
@@ -365,63 +348,50 @@ impl<'self> Prep<'self> {
 
     pub fn lookup_declared_inputs(&self) -> ~[~str] {
         let mut rs = ~[];
-        for (_, v) in self.declared_inputs.iter() {
-            for (inp, _) in v.iter() {
+        let WorkMap(ref declared_inputs) = self.declared_inputs;
+        for (_, v) in declared_inputs.iter() {
+            let KindMap(ref vmap) = *v;
+            for (inp, _) in vmap.iter() {
                 rs.push(inp.clone());
             }
         }
         rs
     }
+}
 
-    pub fn declare_input<T: Encodable<json::Encoder>>(&mut self, kind: &str, name: &str, val: &T) {
-        debug!("Declaring input %s %s %?", kind, name, val);
-        self.declared_inputs.insert_work_key(WorkKey::new(kind, name), digest(val));
+impl<'a> Prep<'a> {
+    pub fn declare_input<
+        'a,
+        T: Encodable<json::Encoder<'a>>
+    >(&mut self, kind: &str, name: &str, value: &T) {
+        debug!("Declaring input {} {} {:?}", kind, name, value);
+        self.declared_inputs.insert_work_key(WorkKey::new(kind, name), value)
     }
 
-    pub fn declare_input_path(&mut self, path: &Path) {
-        debug!("Declaring input path: %s", path.to_str());
-        let key = WorkKey::new("path", path.to_str());
-        self.declared_inputs.insert_work_key(key, digest_path(path));
-    }
-
-    pub fn declare_input_path_opt(&mut self, path: &Option<Path>) {
-        match *path {
-            Some(ref path) => self.declare_input_path(path),
-            None => { }
-        }
-    }
-
-    pub fn declare_input_paths(&mut self, paths: &[Path]) {
-        for path in paths.iter() {
-            self.declare_input_path(path);
-        }
-    }
-
-    fn is_fresh(&self, cat: &str, kind: &str,
-                name: &str, val: &str) -> bool {
+    fn is_fresh(&self, cat: &str, kind: &str, name: &str, val: &str) -> bool {
         let k = kind.to_owned();
         let f = self.ctxt.freshness.get().find(&k);
-        debug!("freshness for: %s/%s/%s/%s", cat, kind, name, val)
+        debug!("freshness for: {}/{}/{}/{}", cat, kind, name, val)
         let fresh = match f {
-            None => fail!("missing freshness-function for '%s'", kind),
+            None => fail!("missing freshness-function for '{}'", kind),
             Some(f) => (*f)(name, val)
         };
-        do self.ctxt.logger.write |lg| {
+        self.ctxt.logger.write(|lg| {
             if fresh {
-                lg.info(fmt!("%s %s:%s is fresh",
-                             cat, kind, name));
+                lg.info(format!("{} {}:{} is fresh", cat, kind, name));
             } else {
-                lg.info(fmt!("%s %s:%s is not fresh",
-                             cat, kind, name))
+                lg.info(format!("{} {}:{} is not fresh", cat, kind, name))
             }
-        };
+        });
         fresh
     }
 
     fn all_fresh(&self, cat: &str, map: &WorkMap) -> bool {
+        let WorkMap(ref map) = *map;
         for (k_name, kindmap) in map.iter() {
-            for (k_kind, v) in kindmap.iter() {
-                if ! self.is_fresh(cat, *k_kind, *k_name, *v) {
+            let KindMap(ref kindmap_) = *kindmap;
+            for (k_kind, v) in kindmap_.iter() {
+                if !self.is_fresh(cat, *k_kind, *k_name, *v) {
                     return false;
                 }
             }
@@ -429,35 +399,24 @@ impl<'self> Prep<'self> {
         return true;
     }
 
-    pub fn exec<T:Send +
-        Encodable<json::Encoder> +
-        Decodable<json::Decoder> +
-        ToJson>(
-            &'self self, blk: ~fn(&mut Exec) -> T) -> T {
+    pub fn exec<'a, T:Send +
+        Encodable<json::Encoder<'a>> +
+        Decodable<json::Decoder>>(
+            &self, blk: proc(&mut Exec) -> T) -> T {
         self.exec_work(blk).unwrap()
     }
 
-    pub fn exec_with<T:Send +
-        Encodable<json::Encoder> +
-        Decodable<json::Decoder> +
-        ToJson,
-        U:Send>(
-            &'self self, value: U, blk: ~fn(&mut Exec, U) -> T) -> T {
-        self.exec_work_with(value, blk).unwrap()
-    }
-
-    fn exec_work<T:Send +
-        Encodable<json::Encoder> +
-        Decodable<json::Decoder> +
-        ToJson>( // FIXME(#5121)
-            &'self self, blk: ~fn(&mut Exec) -> T) -> Work<'self, T> {
+    fn exec_work<'a, T:Send +
+        Encodable<json::Encoder<'a>> +
+        Decodable<json::Decoder>>( // FIXME(#5121)
+            &'a self, blk: proc(&mut Exec) -> T) -> Work<'a, T> {
         let mut bo = Some(blk);
 
-        debug!("exec_work: looking up %s and %?", self.fn_name,
+        debug!("exec_work: looking up {} and {:?}", self.fn_name,
                self.declared_inputs);
-        let cached = do self.ctxt.db.read |db| {
+        let cached = self.ctxt.db.read(|db| {
             db.prepare(self.fn_name, &self.declared_inputs)
-        };
+        });
 
         match cached {
             Some((ref disc_in, ref disc_out, ref res))
@@ -465,61 +424,41 @@ impl<'self> Prep<'self> {
                self.all_fresh("discovered input", disc_in) &&
                self.all_fresh("discovered output", disc_out) => {
                 debug!("Cache hit!");
-                debug!("Trying to decode: %? / %? / %?",
+                debug!("Trying to decode: {:?} / {:?} / {}",
                        disc_in, disc_out, *res);
                 Work::from_value(json_decode(*res))
             }
 
             _ => {
                 debug!("Cache miss!");
-                let (port, chan) = oneshot();
+                let (port, chan) = Chan::new();
                 let blk = bo.take_unwrap();
-                let chan = Cell::new(chan);
 
-// What happens if the task fails?
-                do task::spawn {
+                // FIXME: What happens if the task fails?
+                spawn(proc() {
                     let mut exe = Exec {
                         discovered_inputs: WorkMap::new(),
                         discovered_outputs: WorkMap::new(),
                     };
-                    let chan = chan.take();
                     let v = blk(&mut exe);
                     chan.send((exe, v));
-                }
+                });
                 Work::from_task(self, port)
             }
         }
     }
-
-    pub fn exec_work_with<T:Send +
-        Encodable<json::Encoder> +
-        Decodable<json::Decoder> +
-        ToJson,
-        U:Send>(
-            &'self self, value: U, blk: ~fn(&mut Exec, U) -> T) -> Work<'self, T> {
-
-        let (port, chan) = oneshot();
-        let port = Cell::new(port);
-        chan.send(value);
-
-        do self.exec_work |exec| {
-            let port = port.take();
-            blk(exec, port.recv())
-        }
-    }
 }
 
-impl<'self, T:Send +
-       Encodable<json::Encoder> +
-       Decodable<json::Decoder> +
-       ToJson>
-    Work<'self, T> { // FIXME(#5121)
+impl<'a, T:Send +
+       Encodable<json::Encoder<'a>> +
+       Decodable<json::Decoder>>
+    Work<'a, T> { // FIXME(#5121)
 
-    pub fn from_value(elt: T) -> Work<'self, T> {
+    pub fn from_value(elt: T) -> Work<'a, T> {
         WorkValue(elt)
     }
-    pub fn from_task(prep: &'self Prep<'self>, port: PortOne<(Exec, T)>)
-        -> Work<'self, T> {
+    pub fn from_task(prep: &'a Prep<'a>, port: Port<(Exec, T)>)
+        -> Work<'a, T> {
         WorkFromTask(prep, port)
     }
 
@@ -528,24 +467,17 @@ impl<'self, T:Send +
             WorkValue(v) => v,
             WorkFromTask(prep, port) => {
                 let (exe, v) = port.recv();
-                //let s = json_encode(&v);
-                do prep.ctxt.db.write |db| {
+                let s = json_encode(&v);
+                prep.ctxt.db.write(|db| {
                     db.cache(prep.fn_name,
                              &prep.declared_inputs,
                              &exe.discovered_inputs,
                              &exe.discovered_outputs,
-                             v.to_json());
-                }
+                             s)
+                });
                 v
             }
         }
-    }
-}
-
-impl Exec {
-    pub fn declare_output_path(&mut self, path: &Path) {
-        let key = WorkKey::new("path", path.to_str());
-        self.discovered_outputs.insert_work_key(key, digest_path(path));
     }
 }
 
@@ -574,13 +506,13 @@ fn test() {
 
     let cx = Context::new(Database::new(db_path));
    
-    let s = do cx.with_prep("test1") |prep| {
+    let s = cx.with_prep("test1", |prep| {
 
         let subcx = cx.clone();
         let pth = pth.clone();
 
         prep.declare_input_path(&pth);
-        do prep.exec |_exe| {
+        prep.exec(|_exe| {
             let out = make_path(~"foo.o");
             run::process_status("gcc", [pth.to_str(), ~"-o", out.to_str()]);
 
@@ -588,8 +520,8 @@ fn test() {
             // Could run sub-rules inside here.
 
             out.to_str()
-        }
-    };
+        })
+    });
 
     io::println(s);
 }

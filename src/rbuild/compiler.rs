@@ -1,4 +1,5 @@
-use std::run;
+use std::io::IoResult;
+use std::io::process::Process;
 use std::vec;
 
 use context::Context;
@@ -20,19 +21,19 @@ impl Compiler {
     }
 
     pub fn build_object(&self, src: Path) -> GccExec {
-        let dst_filename: ~str = match src.filename() {
-            Some(src_filename) => {
-                [&"", src_filename, &".o"].concat()
-            }
-            None => fail!(),
-        };
-        let dst = Some(src.dir_path().with_filename(dst_filename));
+        self.build_object_with(None, src, &[~"-c"])
+    }
+
+    pub fn build_object_with(&self, dst: Option<Path>, src: Path, flags: &[~str]) -> GccExec {
+        let dst = dst.or_else(|| {
+            Some(src.clone().with_extension("o"))
+        });
 
         let gcc = Gcc {
             exe: self.exe.clone(),
             dst: dst,
             srcs: ~[src],
-            flags: vec::append(self.flags.clone(), [~"-c"]),
+            flags: vec::append(self.flags.clone(), flags),
         };
 
         GccExec {
@@ -41,31 +42,11 @@ impl Compiler {
         }
     }
 
-    /*
-    pub fn build_object_with(&self, dst: Option<Path>, src: Path, opts: BuildObjectOptions) -> BuildObjectExec {
-        BuildObjectExec {
-            ctx: self.ctx.clone(),
-            opts: BuildObjectOptions {
-                exe: self.exe.clone(),
-                dst: None,
-                src: src,
-                flags: vec::append(self.flags.clone(), [~"-c"]),
-            }
-        }
+    pub fn build_objects(&self, srcs: &[Path]) -> ~[GccExec] {
+        srcs.iter().map(|src| {
+            self.build_object(src.clone())
+        }).collect()
     }
-
-    pub fn build_objects(&self, src: &[Path]) -> BuildObjectsExec {
-        BuildObjectExec {
-            ctx: self.ctx.clone(),
-            opts: BuildObjectOptions {
-                exe: self.exe.clone(),
-                dst: None,
-                srcs: srcs,
-                flags: vec::append(self.flags.clone(), [~"-c"]),
-            }
-        }
-    }
-    */
 
     pub fn build_exe(&self, dst: Path, srcs: ~[Path]) -> GccExec {
         let gcc = Gcc {
@@ -82,12 +63,12 @@ impl Compiler {
     }
 }
 
-#[deriving(Clone, Decodable, Encodable)]
-struct Gcc {
-    exe: Path,
-    dst: Option<Path>,
-    srcs: ~[Path],
-    flags: ~[~str],
+#[deriving(Clone, Hash, Encodable)]
+pub struct Gcc {
+    priv exe: Path,
+    priv dst: Option<Path>,
+    priv srcs: ~[Path],
+    priv flags: ~[~str],
 }
 
 impl Gcc {
@@ -98,12 +79,14 @@ impl Gcc {
         }
     }
 
-    pub fn run(&self) {
-        let mut cmd = ~[self.exe.to_str()];
+    pub fn run(&self) -> IoResult<()> {
+        let exe = self.exe.as_str().unwrap().to_owned();
+
+        let mut cmd = ~[];
 
         match self.dst {
             Some(ref dst) => {
-                cmd.push_all([~"-o", dst.to_str()]);
+                cmd.push_all([~"-o", dst.as_str().unwrap().to_owned()]);
             }
             None => {}
         }
@@ -113,37 +96,37 @@ impl Gcc {
         }
 
         for src in self.srcs.iter() {
-            cmd.push(src.to_str());
+            cmd.push(src.as_str().unwrap().to_owned());
+        }
+
+        print!("{}:", self.exe.display());
+        for src in self.srcs.iter() {
+            print!(" {}", src.display());
         }
 
         match self.dst {
             Some(ref dst) => {
-                println!("{}: {} -> {}",
-                    self.exe.to_str(),
-                    self.srcs.map(|src| src.to_str()).connect(" "),
-                    dst.to_str()
-                );
+                println!(" -> {}", dst.display());
             }
             None => {
-                println!("{}: {}",
-                    self.exe.to_str(),
-                    self.srcs.map(|src| src.to_str()).connect(" ")
-                );
+                println!("");
             }
         }
 
-        let status = run::process_status(*cmd.head(), cmd.tail());
+        let status = try!(Process::status(exe, cmd));
 
-        if status != 0 {
-            fail!("command failed: %?", cmd);
+        if !status.success() {
+            fail!("command failed: {:?}", cmd);
         }
+
+        Ok(())
     }
 }
 
 
-struct GccExec {
-    ctx: Context,
-    gcc: Gcc,
+pub struct GccExec {
+    priv ctx: Context,
+    priv gcc: Gcc,
 }
 
 impl GccExec {
@@ -156,18 +139,16 @@ impl GccExec {
 
         let mut prep = ctx.prep("GccExec");
 
-        prep.declare_input("encodable", "gcc", &gcc);
-        prep.declare_input_path(&gcc.exe);
-        for src in gcc.srcs.iter() {
-            prep.declare_input_path(src);
-        }
+        prep.declare_input("value", "gcc", &gcc);
+        prep.declare_input("path", "exe", &gcc.exe);
+        prep.declare_input("path", "srcs", &gcc.srcs);
 
-        do prep.exec_with(gcc) |exec, gcc| {
-            gcc.run();
+        prep.exec(proc(exec) {
+            gcc.run().unwrap();
             let dst = gcc.dst.unwrap();
-            exec.declare_output_path(&dst);
+            exec.discover_output("path", "dst", &dst);
             dst
-        }
+        })
     }
 }
 

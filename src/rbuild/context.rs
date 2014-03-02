@@ -1,81 +1,11 @@
-use std::io;
-use std::os;
-use extra::digest::Digest;
-use extra::json;
-use extra::serialize::Encodable;
-use extra::sha1::Sha1;
-use extra::treemap::TreeMap;
+use std::io::{IoResult, File};
+use std::hash;
+use std::num::ToStrRadix;
+use collections::TreeMap;
 
 #[deriving(Clone)]
 pub struct Context {
     ctx: ::workcache::Context,
-}
-
-/// Hashes the file contents along with the last-modified time
-pub fn digest_encodable<T: Encodable<json::Encoder>>(value: &T) -> ~str {
-    println!("digest_encodable: {:?}", value);
-
-    let s = do io::with_str_writer |wr| {
-        let mut encoder = json::Encoder(wr);
-        value.encode(&mut encoder)
-    };
-
-    let mut sha = Sha1::new();
-    sha.input_str(s);
-    sha.result_str()
-}
-
-/// Hashes the file contents along with the last-modified time
-pub fn digest_file(path: &Path) -> ~str {
-    let st = match path.stat() {
-        Some(st) => st,
-        None => { fail!("missing file"); }
-    };
-
-    let digest = match io::read_whole_file(path) {
-        Ok(bytes) => {
-            let mut sha = Sha1::new();
-            sha.input(bytes);
-            sha.result_str()
-        }
-        Err(e) => { fail!("error reading file: %?", e) }
-    };
-
-    println!("digesting: {} {:?} {}", path.to_str(), st.st_mtime, digest);
-
-    digest
-}
-
-/*
-/// Hashes only the last-modified time
-pub fn digest_only_date(path: &Path) -> ~str {
-    use cond = conditions::bad_stat::cond;
-
-    let mut sha = ~Sha1::new();
-    let st = match path.stat() {
-                Some(st) => st,
-                None => cond.raise((path.clone(), fmt!("Couldn't get file access time")))
-    };
-    (*sha).input_str(st.st_mtime.to_str());
-    (*sha).result_str()
-}
-*/
-
-fn file_is_fresh(path: &str, in_hash: &str) -> bool {
-    let path = Path(path);
-
-    println!("file_is_fresh: {} {}", path.to_str(), in_hash);
-
-    os::path_exists(&path) && in_hash == digest_file(&path)
-}
-
-fn encodable_is_fresh(path: &str, in_hash: &str) -> bool {
-    let path = Path(path);
-
-    println!("file_is_fresh: {} {}", path.to_str(), in_hash);
-
-    true
-    //in_hash == digest_encodable(&path)
 }
 
 impl Context {
@@ -85,10 +15,11 @@ impl Context {
         let cfg = TreeMap::new();
 
         let mut freshness = TreeMap::new();
-        freshness.insert(~"path", file_is_fresh);
-        freshness.insert(~"encodable", encodable_is_fresh);
+        freshness.insert(~"path", path_is_fresh);
+        freshness.insert(~"paths", paths_are_fresh);
+        freshness.insert(~"value", value_is_fresh);
 
-        let ctx = ::workcache::Context::new_with(db, logger, cfg, freshness);
+        let ctx = ::workcache::Context::new_with_freshness(db, logger, cfg, freshness);
 
         Context { ctx : ctx }
     }
@@ -96,4 +27,54 @@ impl Context {
     pub fn prep<'a>(&'a self, fn_name: &'a str) -> ::workcache::Prep<'a> {
         self.ctx.prep(fn_name)
     }
+}
+
+/// Hashes the file contents along with the last-modified time
+pub fn digest<'a, T: hash::Hash>(value: &T) -> ~str {
+    println!("digest: {:?}", value);
+    hash::hash(value).to_str_radix(16)
+}
+
+/// Hashes the file contents along with the last-modified time
+pub fn digest_file(path: &Path) -> IoResult<~str> {
+    let st = try!(path.stat());
+
+    let mut file = try!(File::open(path));
+    let bytes = try!(file.read_to_end());
+    let digest = digest(&bytes);
+
+    println!("digesting: {} {:?} {}", path.display(), st.modified, digest);
+
+    Ok(digest)
+}
+
+/// Hashes only the last-modified time
+pub fn digest_only_date(path: &Path) -> IoResult<~str> {
+    let st = try!(path.stat());
+    Ok(digest(&st.modified))
+}
+
+extern "C" fn path_is_fresh(path: &str, in_hash: &str) -> bool {
+    let path = Path::new(path);
+
+    println!("path_is_fresh: {} {}", path.display(), in_hash);
+
+    path.exists() && in_hash == digest_file(&path).unwrap()
+}
+
+extern "C" fn paths_are_fresh(path: &str, in_hash: &str) -> bool {
+    let path = Path::new(path);
+
+    println!("paths_are_fresh: {} {}", path.display(), in_hash);
+
+    path.exists() && in_hash == digest_file(&path).unwrap()
+}
+
+
+extern "C" fn value_is_fresh(path: &str, in_hash: &str) -> bool {
+    let path = Path::new(path);
+
+    println!("value_is_fresh: {} {}", path.display(), in_hash);
+
+    in_hash == digest_file(&path).unwrap()
 }
