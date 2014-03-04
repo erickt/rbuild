@@ -20,63 +20,89 @@ impl Compiler {
         }
     }
 
-    pub fn build_object(&self, src: Path) -> GccExec {
+    pub fn build_object(&self, src: Path) -> Path {
         self.build_object_with(None, src, &[~"-c"])
     }
 
-    pub fn build_object_with(&self, dst: Option<Path>, src: Path, flags: &[~str]) -> GccExec {
+    pub fn build_object_with(&self, dst: Option<Path>, src: Path, flags: &[~str]) -> Path {
         let dst = dst.or_else(|| {
             Some(src.clone().with_extension("o"))
         });
 
-        let gcc = Gcc {
+        let call = Call {
             exe: self.exe.clone(),
             dst: dst,
             srcs: ~[src],
             flags: vec::append(self.flags.clone(), flags),
         };
 
-        GccExec {
-            ctx: self.ctx.clone(),
-            gcc: gcc,
-        }
+        let mut prep = self.ctx.prep("Call");
+
+        prep.declare_input_path("exe", &call.exe);
+        prep.declare_input_paths("srcs", call.srcs);
+
+        prep.exec(proc(exec) {
+            call.run().unwrap();
+            let dst = call.dst.unwrap();
+            exec.discover_output_path("dst", &dst);
+            dst
+        })
     }
 
-    pub fn build_objects(&self, srcs: &[Path]) -> ~[GccExec] {
+    /*
+    pub fn build_objects(&self, srcs: &[Path]) -> ~[Call] {
         srcs.iter().map(|src| {
             self.build_object(src.clone())
         }).collect()
     }
 
-    pub fn build_exe(&self, dst: Path, srcs: ~[Path]) -> GccExec {
-        let gcc = Gcc {
+    pub fn build_exe(&self, dst: Path, srcs: ~[Path]) -> Call {
+        let call = Call {
             exe: self.exe.clone(),
             dst: Some(dst),
             srcs: srcs,
             flags: self.flags.clone(),
         };
 
-        GccExec {
+        Call {
             ctx: self.ctx.clone(),
             gcc: gcc,
         }
     }
+    */
 }
 
 #[deriving(Clone, Hash, Encodable)]
-pub struct Gcc {
+pub struct Call {
     priv exe: Path,
     priv dst: Option<Path>,
     priv srcs: ~[Path],
     priv flags: ~[~str],
 }
 
-impl Gcc {
-    pub fn add_flags<S: Str>(&mut self, flags: &[S]) {
+impl Call {
+    pub fn set_dst(mut self, dst: Path) -> Call {
+        self.dst = Some(dst);
+        self
+    }
+
+    pub fn add_src(mut self, src: Path) -> Call {
+        self.srcs.push(src);
+        self
+    }
+
+    pub fn add_flag<S: Str>(mut self, flag: S) -> Call {
+        self.flags.push(flag.as_slice().to_owned());
+        self
+    }
+
+    pub fn add_flags<S: Str>(mut self, flags: &[S]) -> Call {
         for flag in flags.iter() {
             let flag = flag.as_slice().to_owned();
             self.flags.push(flag);
         }
+
+        self
     }
 
     pub fn run(&self) -> IoResult<()> {
@@ -123,34 +149,35 @@ impl Gcc {
     }
 }
 
-
-pub struct GccExec {
+/*
+pub struct Call {
     priv ctx: Context,
     priv gcc: Gcc,
 }
 
-impl GccExec {
+impl Call {
     pub fn add_flags<S: Str>(&mut self, flags: &[S]) {
         self.gcc.add_flags(flags)
     }
 
     pub fn run(self) -> Path {
-        let GccExec { ctx, gcc } = self;
+        let Call { ctx, gcc } = self;
 
-        let mut prep = ctx.prep("GccExec");
+        let mut prep = ctx.prep("Call");
 
         prep.declare_input("value", "gcc", &gcc);
-        prep.declare_input("path", "exe", &gcc.exe);
-        prep.declare_input("path", "srcs", &gcc.srcs);
+        prep.declare_input_path("exe", &gcc.exe);
+        prep.declare_input_paths("srcs", gcc.srcs);
 
         prep.exec(proc(exec) {
             gcc.run().unwrap();
             let dst = gcc.dst.unwrap();
-            exec.discover_output("path", "dst", &dst);
+            exec.discover_output_path("dst", &dst);
             dst
         })
     }
 }
+*/
 
 /*
 struct BuildObjectsExec {
@@ -164,9 +191,9 @@ struct BuildObjectsOptions {
     flags: ~[~str],
 }
 
-impl GccExec {
+impl Call {
     pub fn run(self) -> Path {
-        let GccExec { ctx, opts } = self;
+        let Call { ctx, opts } = self;
 
         let mut prep = ctx.prep("BuildObjectExec");
 

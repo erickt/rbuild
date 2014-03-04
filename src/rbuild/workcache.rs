@@ -10,14 +10,14 @@
 
 #[allow(missing_doc)];
 
+use std::io::{File, MemWriter};
+use std::io;
+use std::str;
+use collections::TreeMap;
 use serialize::json;
 use serialize::json::ToJson;
 use serialize::{Encoder, Encodable, Decoder, Decodable};
 use sync::{Arc,RWArc};
-use collections::TreeMap;
-use std::str;
-use std::io;
-use std::io::{File, MemWriter};
 
 /**
 *
@@ -105,20 +105,16 @@ impl WorkKey {
 // FIXME #8883: The key should be a WorkKey and not a ~str.
 // This is working around some JSON weirdness.
 #[deriving(Clone, Eq, Encodable, Decodable)]
-pub struct WorkMap(TreeMap<~str, KindMap>);
+struct WorkMap(TreeMap<~str, KindMap>);
 
 #[deriving(Clone, Eq, Encodable, Decodable)]
-pub struct KindMap(TreeMap<~str, ~str>);
+struct KindMap(TreeMap<~str, ~str>);
 
 impl WorkMap {
     fn new() -> WorkMap { WorkMap(TreeMap::new()) }
 
-    fn insert_work_key<
-        'a,
-        T: Encodable<json::Encoder<'a>>
-    >(&mut self, k: WorkKey, value: &T) {
+    fn insert_work_key(&mut self, k: WorkKey, value: ~str) {
         let WorkKey { kind, name } = k;
-        let value = json_encode(value);
 
         let WorkMap(ref mut map) = *self;
 
@@ -155,33 +151,36 @@ impl Database {
         db
     }
 
-    pub fn prepare(&self,
+    fn prepare<'a, T: Decodable<json::Decoder>>(
+                   &self,
                    fn_name: &str,
                    declared_inputs: &WorkMap)
-                   -> Option<(WorkMap, WorkMap, ~str)> {
+                   -> Option<(WorkMap, WorkMap, T)> {
         let k = json_encode(&(fn_name, declared_inputs));
-        match self.db_cache.find(&k) {
-            None => None,
-            Some(v) => Some(json_decode(*v))
-        }
+        self.db_cache.find(&k).and_then(|v| {
+            Some(json_decode(*v))
+        })
     }
 
-    pub fn cache(&mut self,
+    fn cache<'a, T: Encodable<json::Encoder<'a>>>(
+                 &mut self,
                  fn_name: &str,
                  declared_inputs: &WorkMap,
                  discovered_inputs: &WorkMap,
                  discovered_outputs: &WorkMap,
-                 result: &str) {
+                 result: &T) {
         let k = json_encode(&(fn_name, declared_inputs));
         let v = json_encode(&(discovered_inputs,
                               discovered_outputs,
                               result));
+        println!("caching! {} {}", k, v);
         self.db_cache.insert(k,v);
         self.db_dirty = true
     }
 
     // FIXME #4330: This should have &mut self and should set self.db_dirty to false.
     fn save(&self) -> io::IoResult<()> {
+        println!("save");
         let mut f = File::create(&self.db_filename);
         self.db_cache.to_json().to_pretty_writer(&mut f)
     }
@@ -190,9 +189,11 @@ impl Database {
         assert!(!self.db_dirty);
         assert!(self.db_filename.exists());
         match File::open(&self.db_filename) {
-            Err(e) => fail!("Couldn't load workcache database {}: {}",
-                            self.db_filename.display(),
-                            e),
+            Err(e) => {
+                fail!("Couldn't load workcache database {}: {}",
+                      self.db_filename.display(),
+                      e)
+            }
             Ok(mut stream) => {
                 match json::from_reader(&mut stream) {
                     Err(e) => fail!("Couldn't parse workcache database (from file {}): {}",
@@ -232,7 +233,7 @@ impl Logger {
     }
 }
 
-pub type FreshnessMap = TreeMap<~str,extern fn(&str,&str)->bool>;
+pub type FreshnessMap = TreeMap<~str, fn(name: &str, value: &str) -> bool>;
 
 #[deriving(Clone)]
 pub struct Context {
@@ -307,18 +308,12 @@ impl Context {
 }
 
 impl Exec {
-    pub fn discover_input<
-        'a,
-        T: Encodable<json::Encoder<'a>>
-    >(&mut self, kind: &str, name: &str, value: &T) {
+    pub fn discover_input(&mut self, kind: &str, name: &str, value: ~str) {
         debug!("Discovering input {} {} {:?}", kind, name, value);
         self.discovered_inputs.insert_work_key(WorkKey::new(kind, name), value)
     }
 
-    pub fn discover_output<
-        'a,
-        T: Encodable<json::Encoder<'a>>
-    >(&mut self, kind: &str, name: &str, value: &T) {
+    pub fn discover_output(&mut self, kind: &str, name: &str, value: ~str) {
         debug!("Discovering output {} {} {:?}", kind, name, value);
         self.discovered_outputs.insert_work_key(WorkKey::new(kind, name), value);
     }
@@ -360,21 +355,18 @@ impl<'a> Prep<'a> {
 }
 
 impl<'a> Prep<'a> {
-    pub fn declare_input<
-        'a,
-        T: Encodable<json::Encoder<'a>>
-    >(&mut self, kind: &str, name: &str, value: &T) {
+    pub fn declare_input(&mut self, kind: &str, name: &str, value: &str) {
         debug!("Declaring input {} {} {:?}", kind, name, value);
-        self.declared_inputs.insert_work_key(WorkKey::new(kind, name), value)
+        self.declared_inputs.insert_work_key(WorkKey::new(kind, name), value.to_owned())
     }
 
-    fn is_fresh(&self, cat: &str, kind: &str, name: &str, val: &str) -> bool {
+    fn is_fresh(&self, cat: &str, kind: &str, name: &str, value: &str) -> bool {
         let k = kind.to_owned();
         let f = self.ctxt.freshness.get().find(&k);
-        debug!("freshness for: {}/{}/{}/{}", cat, kind, name, val)
+        debug!("freshness for: {}/{}/{}/{}", cat, kind, name, value)
         let fresh = match f {
             None => fail!("missing freshness-function for '{}'", kind),
-            Some(f) => (*f)(name, val)
+            Some(f) => (*f)(name, value),
         };
         self.ctxt.logger.write(|lg| {
             if fresh {
@@ -388,15 +380,17 @@ impl<'a> Prep<'a> {
 
     fn all_fresh(&self, cat: &str, map: &WorkMap) -> bool {
         let WorkMap(ref map) = *map;
+
         for (k_name, kindmap) in map.iter() {
             let KindMap(ref kindmap_) = *kindmap;
-            for (k_kind, v) in kindmap_.iter() {
-                if !self.is_fresh(cat, *k_kind, *k_name, *v) {
+            for (k_kind, value) in kindmap_.iter() {
+                if !self.is_fresh(cat, *k_kind, *k_name, *value) {
                     return false;
                 }
             }
         }
-        return true;
+
+        true
     }
 
     pub fn exec<'a, T:Send +
@@ -412,40 +406,57 @@ impl<'a> Prep<'a> {
             &'a self, blk: proc(&mut Exec) -> T) -> Work<'a, T> {
         let mut bo = Some(blk);
 
-        debug!("exec_work: looking up {} and {:?}", self.fn_name,
-               self.declared_inputs);
-        let cached = self.ctxt.db.read(|db| {
+        debug!("exec_work: looking up {} and {:?}", self.fn_name, self.declared_inputs);
+
+        let cached: Option<(WorkMap, WorkMap, T)> = self.ctxt.db.read(|db| {
             db.prepare(self.fn_name, &self.declared_inputs)
         });
 
+        println!("");
         match cached {
-            Some((ref disc_in, ref disc_out, ref res))
-            if self.all_fresh("declared input",&self.declared_inputs) &&
-               self.all_fresh("discovered input", disc_in) &&
-               self.all_fresh("discovered output", disc_out) => {
-                debug!("Cache hit!");
-                debug!("Trying to decode: {:?} / {:?} / {}",
-                       disc_in, disc_out, *res);
-                Work::from_value(json_decode(*res))
+            Some((ref disc_in, ref disc_out, ref res)) => {
+                println!("fee: {:?}", disc_in);
+                println!("fee: {:?}", disc_out);
+                println!("fee: {:?}", res);
             }
-
-            _ => {
-                debug!("Cache miss!");
-                let (port, chan) = Chan::new();
-                let blk = bo.take_unwrap();
-
-                // FIXME: What happens if the task fails?
-                spawn(proc() {
-                    let mut exe = Exec {
-                        discovered_inputs: WorkMap::new(),
-                        discovered_outputs: WorkMap::new(),
-                    };
-                    let v = blk(&mut exe);
-                    chan.send((exe, v));
-                });
-                Work::from_task(self, port)
-            }
+            None => { }
         }
+        println!("");
+
+        match cached {
+            Some((disc_in, disc_out, res)) => {
+                if self.all_fresh("declared input", &self.declared_inputs) &&
+                   self.all_fresh("discovered input", &disc_in) &&
+                   self.all_fresh("discovered output", &disc_out) {
+
+                    debug!("Cache hit!");
+                    debug!("Trying to decode: {:?} / {:?} / {:?}",
+                        disc_in,
+                        disc_out,
+                        res);
+
+                    return Work::from_value(res);
+                }
+            }
+            None => { }
+        }
+
+        debug!("Cache miss!");
+
+        let (port, chan) = Chan::new();
+        let blk = bo.take_unwrap();
+
+        // FIXME: What happens if the task fails?
+        spawn(proc() {
+            let mut exe = Exec {
+                discovered_inputs: WorkMap::new(),
+                discovered_outputs: WorkMap::new(),
+            };
+            let v = blk(&mut exe);
+            chan.send((exe, v));
+        });
+
+        Work::from_task(self, port)
     }
 }
 
@@ -457,8 +468,8 @@ impl<'a, T:Send +
     pub fn from_value(elt: T) -> Work<'a, T> {
         WorkValue(elt)
     }
-    pub fn from_task(prep: &'a Prep<'a>, port: Port<(Exec, T)>)
-        -> Work<'a, T> {
+
+    pub fn from_task(prep: &'a Prep<'a>, port: Port<(Exec, T)>) -> Work<'a, T> {
         WorkFromTask(prep, port)
     }
 
@@ -467,13 +478,12 @@ impl<'a, T:Send +
             WorkValue(v) => v,
             WorkFromTask(prep, port) => {
                 let (exe, v) = port.recv();
-                let s = json_encode(&v);
                 prep.ctxt.db.write(|db| {
                     db.cache(prep.fn_name,
                              &prep.declared_inputs,
                              &exe.discovered_inputs,
                              &exe.discovered_outputs,
-                             s)
+                             &v)
                 });
                 v
             }
