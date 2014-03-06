@@ -173,14 +173,12 @@ impl Database {
         let v = json_encode(&(discovered_inputs,
                               discovered_outputs,
                               result));
-        println!("caching! {} {}", k, v);
         self.db_cache.insert(k,v);
         self.db_dirty = true
     }
 
     // FIXME #4330: This should have &mut self and should set self.db_dirty to false.
     fn save(&self) -> io::IoResult<()> {
-        println!("save");
         let mut f = File::create(&self.db_filename);
         self.db_cache.to_json().to_pretty_writer(&mut f)
     }
@@ -228,8 +226,8 @@ impl Logger {
         Logger { a: () }
     }
 
-    pub fn info(&self, i: &str) {
-        io::println(~"workcache: " + i);
+    pub fn info(&self, msg: &str) {
+        io::println(msg);
     }
 }
 
@@ -411,17 +409,6 @@ impl<'a> Prep<'a> {
         let cached: Option<(WorkMap, WorkMap, T)> = self.ctxt.db.read(|db| {
             db.prepare(self.fn_name, &self.declared_inputs)
         });
-
-        println!("");
-        match cached {
-            Some((ref disc_in, ref disc_out, ref res)) => {
-                println!("fee: {:?}", disc_in);
-                println!("fee: {:?}", disc_out);
-                println!("fee: {:?}", res);
-            }
-            None => { }
-        }
-        println!("");
 
         match cached {
             Some((disc_in, disc_out, res)) => {
