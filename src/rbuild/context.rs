@@ -14,11 +14,19 @@ use workcache;
 #[deriving(Clone)]
 pub struct Context {
     ctx: ::workcache::Context,
+    root: Path,
 }
 
 impl Context {
-    pub fn new<T: IntoPath>(path: T) -> Context {
-        let db = ::workcache::Database::new(path.into_path());
+    pub fn new() -> Context {
+        Context::new_in_path("build")
+    }
+
+    pub fn new_in_path<T: IntoPath>(root: T) -> Context {
+        let root = root.into_path();
+        let db_path = root.join("db.json");
+
+        let db = ::workcache::Database::new(db_path);
         let logger = ::workcache::Logger::new();
         let cfg = TreeMap::new();
 
@@ -27,7 +35,10 @@ impl Context {
 
         let ctx = workcache::Context::new_with_freshness(db, logger, cfg, freshness);
 
-        Context { ctx : ctx }
+        Context {
+            ctx: ctx,
+            root: root,
+        }
     }
 
     pub fn prep<T: str::IntoMaybeOwned<'static>>(&self, fn_name: T) -> Prep {

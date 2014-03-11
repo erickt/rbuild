@@ -4,7 +4,7 @@ use rbuild::context::Context;
 use rbuild::c::gcc::SharedBuilder;
 
 fn main() {
-    let ctx = Context::new("build/db.json");
+    let ctx = Context::new();
     let compiler = SharedBuilder::new(ctx.clone(), "/usr/bin/gcc");
     let objs = ~[
         compiler.compile("examples/cxx/foo.cc").run(),
