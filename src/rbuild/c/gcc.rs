@@ -2,20 +2,21 @@ use std::io::process::Process;
 use sync::Future;
 
 use context::{Context, Call};
+use into_path::IntoPath;
 use into_future::IntoFuture;
 
 #[deriving(Clone)]
-pub struct Builder {
+pub struct SharedBuilder {
     ctx: Context,
     exe: Path,
     flags: ~[~str],
 }
 
-impl Builder {
-    pub fn new<T: IntoFuture<Path>>(ctx: Context, exe: T) -> Builder {
-        Builder {
+impl SharedBuilder {
+    pub fn new<T: IntoPath>(ctx: Context, exe: T) -> SharedBuilder {
+        SharedBuilder {
             ctx: ctx,
-            exe: exe.into_future().unwrap(),
+            exe: exe.into_path(),
             flags: ~[],
         }
     }
@@ -30,9 +31,9 @@ impl Builder {
 
     pub fn link_exe<
         'a,
-        T: IntoFuture<Path>,
-        U: IntoFuture<Path>
-    >(&self, dst: T, srcs: ~[U]) -> LinkExe {
+        Dst: IntoPath,
+        Src: IntoFuture<Path>
+    >(&self, dst: Dst, srcs: ~[Src]) -> LinkExe {
         let gcc = Gcc::new(self.ctx.clone(), self.exe.clone())
             .set_dst(dst)
             .add_srcs(srcs);
@@ -46,7 +47,7 @@ pub struct Compile {
 }
 
 impl Compile {
-    pub fn set_dst<T: IntoFuture<Path>>(self, dst: T) -> Compile {
+    pub fn set_dst<T: IntoPath>(self, dst: T) -> Compile {
         let Compile { gcc } = self;
         Compile { gcc: gcc.set_dst(dst) }
     }
@@ -144,8 +145,8 @@ impl Gcc {
         }
     }
 
-    pub fn set_dst<T: IntoFuture<Path>>(mut self, dst: T) -> Gcc {
-        self.dst = Some(dst.into_future().unwrap());
+    pub fn set_dst<T: IntoPath>(mut self, dst: T) -> Gcc {
+        self.dst = Some(dst.into_path());
         self
     }
 

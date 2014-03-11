@@ -8,6 +8,7 @@ use serialize::json;
 use serialize::{Encodable, Decodable};
 use sync::Future;
 
+use into_path::IntoPath;
 use workcache;
 
 #[deriving(Clone)]
@@ -16,8 +17,8 @@ pub struct Context {
 }
 
 impl Context {
-    pub fn new(path: Path) -> Context {
-        let db = ::workcache::Database::new(path);
+    pub fn new<T: IntoPath>(path: T) -> Context {
+        let db = ::workcache::Database::new(path.into_path());
         let logger = ::workcache::Logger::new();
         let cfg = TreeMap::new();
 

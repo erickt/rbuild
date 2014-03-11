@@ -10,4 +10,5 @@ extern crate sync;
 pub mod c;
 pub mod context;
 pub mod into_future;
+pub mod into_path;
 pub mod workcache;
