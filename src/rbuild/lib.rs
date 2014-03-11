@@ -7,6 +7,7 @@ extern crate extra;
 extern crate serialize;
 extern crate sync;
 
+pub mod c;
 pub mod context;
-pub mod compiler;
+pub mod into_future;
 pub mod workcache;

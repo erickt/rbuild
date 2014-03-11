@@ -9,15 +9,18 @@
 // except according to those terms.
 
 #[allow(missing_doc)];
+#[allow(visible_private_types)];
 
+use std::cell::RefCell;
 use std::io::{File, MemWriter};
 use std::io;
 use std::str;
+use std::str::IntoMaybeOwned;
 use collections::TreeMap;
 use serialize::json;
 use serialize::json::ToJson;
 use serialize::{Encoder, Encodable, Decoder, Decodable};
-use sync::{Arc,RWArc};
+use sync::{Arc, RWArc, Future};
 
 /**
 *
@@ -87,7 +90,7 @@ use sync::{Arc,RWArc};
 *
 */
 
-#[deriving(Clone, Eq, Encodable, Decodable, TotalOrd, TotalEq)]
+#[deriving(Clone, Eq, Encodable, Decodable, Ord, TotalOrd, TotalEq)]
 struct WorkKey {
     kind: ~str,
     name: ~str
@@ -247,20 +250,15 @@ pub struct Context {
     priv freshness: Arc<FreshnessMap>
 }
 
-pub struct Prep<'a> {
-    priv ctxt: &'a Context,
-    priv fn_name: &'a str,
+pub struct Prep {
+    priv ctxt: Context,
+    priv fn_name: str::SendStr,
     priv declared_inputs: WorkMap,
 }
 
 pub struct Exec {
     priv discovered_inputs: WorkMap,
     priv discovered_outputs: WorkMap
-}
-
-enum Work<'a, T> {
-    WorkValue(T),
-    WorkFromTask(&'a Prep<'a>, Port<(Exec, T)>),
 }
 
 fn json_encode<'a, T:Encodable<json::Encoder<'a>>>(t: &T) -> ~str {
@@ -294,15 +292,9 @@ impl Context {
         }
     }
 
-    pub fn prep<'a>(&'a self, fn_name: &'a str) -> Prep<'a> {
-        Prep::new(self, fn_name)
+    pub fn prep<T: IntoMaybeOwned<'static>>(&self, fn_name: T) -> Prep {
+        Prep::new(self.clone(), fn_name)
     }
-
-    pub fn with_prep<'a, T>(&'a self, fn_name: &'a str, blk: |p: &mut Prep| -> T) -> T {
-        let mut p = self.prep(fn_name);
-        blk(&mut p)
-    }
-
 }
 
 impl Exec {
@@ -330,11 +322,11 @@ impl Exec {
     }
 }
 
-impl<'a> Prep<'a> {
-    fn new(ctxt: &'a Context, fn_name: &'a str) -> Prep<'a> {
+impl Prep {
+    fn new<T: IntoMaybeOwned<'static>>(ctxt: Context, fn_name: T) -> Prep {
         Prep {
             ctxt: ctxt,
-            fn_name: fn_name,
+            fn_name: fn_name.into_maybe_owned(),
             declared_inputs: WorkMap::new()
         }
     }
@@ -352,7 +344,7 @@ impl<'a> Prep<'a> {
     }
 }
 
-impl<'a> Prep<'a> {
+impl Prep {
     pub fn declare_input(&mut self, kind: &str, name: &str, value: &str) {
         debug!("Declaring input {} {} {:?}", kind, name, value);
         self.declared_inputs.insert_work_key(WorkKey::new(kind, name), value.to_owned())
@@ -391,23 +383,14 @@ impl<'a> Prep<'a> {
         true
     }
 
-    pub fn exec<'a, T:Send +
-        Encodable<json::Encoder<'a>> +
-        Decodable<json::Decoder>>(
-            &self, blk: proc(&mut Exec) -> T) -> T {
-        self.exec_work(blk).unwrap()
-    }
-
-    fn exec_work<'a, T:Send +
-        Encodable<json::Encoder<'a>> +
-        Decodable<json::Decoder>>( // FIXME(#5121)
-            &'a self, blk: proc(&mut Exec) -> T) -> Work<'a, T> {
-        let mut bo = Some(blk);
-
+    pub fn exec<
+        'a,
+        T:Send + Encodable<json::Encoder<'a>> + Decodable<json::Decoder> // FIXME(#5121)
+    >(self, blk: proc(&mut Exec) -> T) -> Future<T> {
         debug!("exec_work: looking up {} and {:?}", self.fn_name, self.declared_inputs);
 
         let cached: Option<(WorkMap, WorkMap, T)> = self.ctxt.db.read(|db| {
-            db.prepare(self.fn_name, &self.declared_inputs)
+            db.prepare(self.fn_name.as_slice(), &self.declared_inputs)
         });
 
         match cached {
@@ -422,7 +405,7 @@ impl<'a> Prep<'a> {
                         disc_out,
                         res);
 
-                    return Work::from_value(res);
+                    return Future::from_value(res);
                 }
             }
             None => { }
@@ -430,23 +413,34 @@ impl<'a> Prep<'a> {
 
         debug!("Cache miss!");
 
-        let (port, chan) = Chan::new();
-        let blk = bo.take_unwrap();
-
         // FIXME: What happens if the task fails?
-        spawn(proc() {
+        let future = Future::spawn(proc() {
             let mut exe = Exec {
                 discovered_inputs: WorkMap::new(),
                 discovered_outputs: WorkMap::new(),
             };
             let v = blk(&mut exe);
-            chan.send((exe, v));
+            (exe, v)
         });
 
-        Work::from_task(self, port)
+        let prep = RefCell::new(self);
+
+        Future::from_fn(proc() {
+            let prep = prep.unwrap();
+            let (exe, v) = future.unwrap();
+            prep.ctxt.db.write(|db| {
+                db.cache(prep.fn_name.as_slice(),
+                         &prep.declared_inputs,
+                         &exe.discovered_inputs,
+                         &exe.discovered_outputs,
+                         &v)
+            });
+            v
+        })
     }
 }
 
+/*
 impl<'a, T:Send +
        Encodable<json::Encoder<'a>> +
        Decodable<json::Decoder>>
@@ -477,6 +471,7 @@ impl<'a, T:Send +
         }
     }
 }
+*/
 
 #[test]
 fn test() {

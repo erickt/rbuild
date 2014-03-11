@@ -6,6 +6,7 @@ use std::num::ToStrRadix;
 use collections::TreeMap;
 use serialize::json;
 use serialize::{Encodable, Decodable};
+use sync::Future;
 
 use workcache;
 
@@ -28,23 +29,24 @@ impl Context {
         Context { ctx : ctx }
     }
 
-    pub fn prep<'a>(&'a self, fn_name: &'a str) -> Prep<'a> {
+    pub fn prep<T: str::IntoMaybeOwned<'static>>(&self, fn_name: T) -> Prep {
         Prep { prep: self.ctx.prep(fn_name) }
     }
 
-    pub fn prep_call<'a>(&'a self, fn_name: &'a str, call: &Call) -> Prep<'a> {
+    pub fn prep_call<T: str::IntoMaybeOwned<'static>>(&self, fn_name: T, call: &Call) -> Prep {
         let mut prep = self.prep(fn_name);
         prep.declare_call(call);
         prep
     }
 }
 
-pub struct Prep<'a> {
-    priv prep: workcache::Prep<'a>,
+pub struct Prep {
+    priv prep: workcache::Prep,
 }
 
-impl<'a> Prep<'a> {
+impl Prep {
     pub fn declare_input<
+        'a,
         T: Encodable<json::Encoder<'a>>
     >(&mut self, kind: &str, name: &str, value: &T) {
         self.prep.declare_input(kind, name, json_encode(value))
@@ -57,7 +59,7 @@ impl<'a> Prep<'a> {
     pub fn exec<
         'a,
         T: Send + Encodable<json::Encoder<'a>> + Decodable<json::Decoder>
-    >(&self, blk: proc(&mut Exec) -> T) -> T {
+    >(self, blk: proc(&mut Exec) -> T) -> Future<T> {
         self.prep.exec(proc(exec) {
             let mut exec = Exec { exec: exec };
             blk(&mut exec)

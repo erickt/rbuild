@@ -1,45 +1,43 @@
 use std::io::process::Process;
+use sync::Future;
 
 use context::{Context, Call};
+use into_future::IntoFuture;
 
 #[deriving(Clone)]
-pub struct Compiler {
+pub struct Builder {
     ctx: Context,
     exe: Path,
     flags: ~[~str],
 }
 
-impl Compiler {
-    pub fn new(ctx: Context, exe: Path) -> Compiler {
-        Compiler {
+impl Builder {
+    pub fn new<T: IntoFuture<Path>>(ctx: Context, exe: T) -> Builder {
+        Builder {
             ctx: ctx,
-            exe: exe,
+            exe: exe.into_future().unwrap(),
             flags: ~[],
         }
     }
 
-    pub fn compile(&self, src: Path) -> Compile {
-        Compile {
-            gcc: Gcc {
-                ctx: self.ctx.clone(),
-                exe: self.exe.clone(),
-                dst: None,
-                srcs: ~[src],
-                flags: ~[~"-c"],
-            }
-        }
+    pub fn compile<T: IntoFuture<Path>>(&self, src: T) -> Compile {
+        let gcc = Gcc::new(self.ctx.clone(), self.exe.clone())
+            .add_src(src)
+            .add_flag(~"-c");
+
+        Compile { gcc: gcc }
     }
 
-    pub fn link_exe(&self, dst: Path, srcs: ~[Path]) -> LinkExe {
-        LinkExe {
-            gcc: Gcc {
-                ctx: self.ctx.clone(),
-                exe: self.exe.clone(),
-                dst: Some(dst),
-                srcs: srcs,
-                flags: ~[],
-            }
-        }
+    pub fn link_exe<
+        'a,
+        T: IntoFuture<Path>,
+        U: IntoFuture<Path>
+    >(&self, dst: T, srcs: ~[U]) -> LinkExe {
+        let gcc = Gcc::new(self.ctx.clone(), self.exe.clone())
+            .set_dst(dst)
+            .add_srcs(srcs);
+
+        LinkExe { gcc: gcc }
     }
 }
 
@@ -48,14 +46,19 @@ pub struct Compile {
 }
 
 impl Compile {
-    pub fn set_dst(self, dst: Path) -> Compile {
+    pub fn set_dst<T: IntoFuture<Path>>(self, dst: T) -> Compile {
         let Compile { gcc } = self;
         Compile { gcc: gcc.set_dst(dst) }
     }
 
-    pub fn add_src(self, src: Path) -> Compile {
+    pub fn add_src<T: IntoFuture<Path>>(self, src: T) -> Compile {
         let Compile { gcc } = self;
         Compile { gcc: gcc.add_src(src) }
+    }
+
+    pub fn add_srcs<T: IntoFuture<Path>>(self, srcs: ~[T]) -> Compile {
+        let Compile { gcc } = self;
+        Compile { gcc: gcc.add_srcs(srcs) }
     }
 
     pub fn add_flag<S: Str>(self, flag: S) -> Compile {
@@ -63,7 +66,7 @@ impl Compile {
         Compile { gcc: gcc.add_flag(flag) }
     }
 
-    pub fn run(self) -> Path {
+    pub fn run(self) -> Future<Path> {
         let Compile { mut gcc } = self;
 
         assert!(!gcc.srcs.is_empty());
@@ -77,9 +80,10 @@ impl Compile {
             }
         };
 
-        gcc.run();
-
-        dst
+        Future::from_fn(proc() {
+            gcc.run().unwrap();
+            dst
+        })
     }
 }
 
@@ -88,17 +92,23 @@ pub struct LinkExe {
 }
 
 impl LinkExe {
-    pub fn add_src(self, src: Path) -> LinkExe {
+    pub fn add_src<T: IntoFuture<Path>>(self, src: T) -> LinkExe {
         let LinkExe { gcc } = self;
         LinkExe { gcc: gcc.add_src(src) }
     }
+
+    pub fn add_srcs<T: IntoFuture<Path>>(self, srcs: ~[T]) -> LinkExe {
+        let LinkExe { gcc } = self;
+        LinkExe { gcc: gcc.add_srcs(srcs) }
+    }
+
 
     pub fn add_flag<S: Str>(self, flag: S) -> LinkExe {
         let LinkExe { gcc } = self;
         LinkExe { gcc: gcc.add_flag(flag) }
     }
 
-    pub fn run(self) -> Path {
+    pub fn run(self) -> Future<Path> {
         let LinkExe { gcc } = self;
 
         assert!(!gcc.srcs.is_empty());
@@ -108,9 +118,10 @@ impl LinkExe {
             None => { fail!("expected dst") }
         };
 
-        gcc.run();
-
-        dst
+        Future::from_fn(proc() {
+            gcc.run().unwrap();
+            dst
+        })
     }
 }
 
@@ -123,13 +134,29 @@ struct Gcc {
 }
 
 impl Gcc {
-    pub fn set_dst(mut self, dst: Path) -> Gcc {
-        self.dst = Some(dst);
+    pub fn new(ctx: Context, exe: Path) -> Gcc {
+        Gcc {
+            ctx: ctx,
+            exe: exe,
+            dst: None,
+            srcs: ~[],
+            flags: ~[],
+        }
+    }
+
+    pub fn set_dst<T: IntoFuture<Path>>(mut self, dst: T) -> Gcc {
+        self.dst = Some(dst.into_future().unwrap());
         self
     }
 
-    pub fn add_src(mut self, src: Path) -> Gcc {
-        self.srcs.push(src);
+    pub fn add_src<T: IntoFuture<Path>>(mut self, src: T) -> Gcc {
+        self.srcs.push(src.into_future().unwrap());
+        self
+    }
+
+    pub fn add_srcs<T: IntoFuture<Path>>(mut self, srcs: ~[T]) -> Gcc {
+        let mut iter = srcs.move_iter().map(|src| src.into_future().unwrap());
+        self.srcs.extend(&mut iter);
         self
     }
 
@@ -138,7 +165,7 @@ impl Gcc {
         self
     }
 
-    fn run(self) {
+    fn run(self) -> Future<()> {
         let Gcc { ctx, exe, dst, srcs, flags } = self;
 
         assert!(!srcs.is_empty());
