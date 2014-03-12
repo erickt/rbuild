@@ -1,4 +1,6 @@
+use std::io;
 use std::io::process::Process;
+use std::io::fs;
 use sync::Future;
 
 use context::{Context, Call};
@@ -72,14 +74,13 @@ impl Compile {
 
         assert!(!gcc.srcs.is_empty());
 
-        let dst = match gcc.dst {
-            Some(ref dst) => dst.clone(),
-            None => {
-                let dst = gcc.srcs[0].with_extension("o");
-                gcc.dst = Some(dst.clone());
-                dst
-            }
+        let dst = match gcc.dst.take() {
+            Some(dst) => dst,
+            None => gcc.srcs[0].with_extension("o"),
         };
+
+        let dst = gcc.ctx.root.join(dst);
+        gcc.dst = Some(dst.clone());
 
         Future::from_fn(proc() {
             gcc.run().unwrap();
@@ -110,14 +111,13 @@ impl LinkExe {
     }
 
     pub fn run(self) -> Future<Path> {
-        let LinkExe { gcc } = self;
+        let LinkExe { mut gcc } = self;
 
         assert!(!gcc.srcs.is_empty());
 
-        let dst = match gcc.dst {
-            Some(ref dst) => dst.clone(),
-            None => { fail!("expected dst") }
-        };
+        let dst = gcc.dst.take_unwrap();
+        let dst = gcc.ctx.root.join(dst);
+        gcc.dst = Some(dst.clone());
 
         Future::from_fn(proc() {
             gcc.run().unwrap();
@@ -202,8 +202,15 @@ impl Gcc {
             }
 
             match dst {
-                Some(ref dst) => { println!(" -> {}", dst.display()); }
-                None => { println!(""); }
+                Some(ref dst) => {
+                    // Make sure the parent directories exist.
+                    fs::mkdir_recursive(&dst.dir_path(), io::UserDir).unwrap();
+
+                    println!(" -> {}", dst.display());
+                }
+                None => {
+                    println!("");
+                }
             }
 
             println!("{} {}", prog, args);

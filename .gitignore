@@ -1,5 +1,2 @@
 .rust/
 build/
-*.o
-db.json
-examples/cxx/foo
