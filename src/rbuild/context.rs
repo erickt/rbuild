@@ -31,7 +31,8 @@ impl Context {
         let cfg = TreeMap::new();
 
         let mut freshness = TreeMap::new();
-        freshness.insert(~"call", call_is_fresh);
+        freshness.insert(~"Call", call_is_fresh);
+        freshness.insert(~"InputPath", input_path_is_fresh);
 
         let ctx = workcache::Context::new_with_freshness(db, logger, cfg, freshness);
 
@@ -64,8 +65,14 @@ impl Prep {
         self.prep.declare_input(kind, name, json_encode(value))
     }
 
+    pub fn declare_input_path(&mut self, path: Path) -> IoResult<()> {
+        let path = try!(InputPath::new(path));
+        self.declare_input("InputPath", "", &path);
+        Ok(())
+    }
+
     pub fn declare_call(&mut self, call: &Call) {
-        self.declare_input("call", "", call)
+        self.declare_input("Call", "", call)
     }
 
     pub fn exec<
@@ -90,8 +97,10 @@ impl<'a> Exec<'a> {
         self.exec.discover_input(kind, name, json_encode(value))
     }
 
-    pub fn discover_input_path(&mut self, name: &str, path: Path) {
-        self.discover_input("path", name, &InputPath::new(path))
+    pub fn discover_input_path(&mut self, name: &str, path: Path) -> IoResult<()> {
+        let path = try!(InputPath::new(path));
+        self.discover_input("path", name, &path);
+        Ok(())
     }
 
     pub fn discover_output<
@@ -124,18 +133,18 @@ struct InputPath {
 }
 
 impl InputPath {
-    fn new(path: Path) -> InputPath {
-        let digest = digest_path(&path).unwrap();
-        let st = path.stat().unwrap();
+    fn new(path: Path) -> IoResult<InputPath> {
+        let digest = try!(digest_path(&path));
+        let st = try!(path.stat());
 
-        InputPath {
+        Ok(InputPath {
             path: path,
             digest: digest,
             modified: st.modified,
-        }
+        })
     }
 
-    pub fn exists(&self) -> bool {
+    fn exists(&self) -> bool {
         self.path.exists()
     }
 
@@ -151,19 +160,23 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn new(prog: Path) -> Call {
-        Call {
-            prog: InputPath(InputPath::new(prog)),
+    pub fn new(prog: Path) -> IoResult<Call> {
+        let prog = try!(InputPath::new(prog));
+        Ok(Call {
+            prog: InputPath(prog),
             args: ~[],
-        }
+        })
     }
 
     pub fn push_str(&mut self, value: ~str) {
         self.args.push(Str(value))
     }
 
-    pub fn push_input_path(&mut self, value: Path) {
-        self.args.push(InputPath(InputPath::new(value)))
+    pub fn push_input_path(&mut self, path: Path) -> IoResult<()> {
+        let path = try!(InputPath::new(path));
+        self.args.push(InputPath(path));
+
+        Ok(())
     }
 
     pub fn push_output_path(&mut self, value: Path) {
@@ -224,4 +237,10 @@ fn call_is_fresh(_name: &str, value: &str) -> bool {
     let call: Call = json_decode(value);
 
     call.is_fresh()
+}
+
+fn input_path_is_fresh(_name: &str, value: &str) -> bool {
+    let path: InputPath = json_decode(value);
+
+    path.is_fresh()
 }
