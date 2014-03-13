@@ -57,6 +57,13 @@ pub struct Gcc {
     priv srcs: ~[Path],
     priv includes: ~[Path],
     priv libs: ~[Path],
+    priv external_libs: ~[~str],
+    priv libpaths: ~[Path],
+    priv macros: ~[~str],
+    priv warnings: ~[~str],
+    priv debug: bool,
+    priv profile: bool,
+    priv optimize: bool,
     priv flags: ~[~str],
 }
 
@@ -74,6 +81,13 @@ impl Gcc {
             srcs: ~[],
             includes: ~[],
             libs: ~[],
+            external_libs: ~[],
+            libpaths: ~[],
+            macros: ~[],
+            warnings: ~[],
+            debug: false,
+            profile: false,
+            optimize: false,
             flags: ~[],
         }
     }
@@ -83,25 +97,53 @@ impl Gcc {
         self
     }
 
-    pub fn add_srcs<T: IntoFuture<Path>>(mut self, srcs: ~[T]) -> Gcc {
-        let mut iter = srcs.move_iter().map(|src| src.into_future().unwrap());
-        self.srcs.extend(&mut iter);
-        self
-    }
-
     pub fn add_include<T: IntoFuture<Path>>(mut self, include: T) -> Gcc {
         self.includes.push(include.into_future().unwrap());
         self
     }
 
     pub fn add_lib<T: IntoFuture<Path>>(mut self, lib: T) -> Gcc {
-        let lib = lib.into_future().unwrap();
-        self.libs.push(lib);
+        self.libs.push(lib.into_future().unwrap());
+        self
+    }
+
+    pub fn add_external_lib<T: Str>(mut self, lib: T) -> Gcc {
+        self.external_libs.push(lib.into_owned());
+        self
+    }
+
+    pub fn add_libpath<T: IntoPath>(mut self, libpath: T) -> Gcc {
+        self.libpaths.push(libpath.into_path());
+        self
+    }
+
+    pub fn add_macro<T: Str>(mut self, macro: T) -> Gcc {
+        self.macros.push(macro.into_owned());
+        self
+    }
+
+    pub fn add_warning<T: Str>(mut self, warning: T) -> Gcc {
+        self.warnings.push(warning.into_owned());
+        self
+    }
+
+    pub fn set_debug(mut self, debug: bool) -> Gcc {
+        self.debug = debug;
+        self
+    }
+
+    pub fn set_optimize(mut self, optimize: bool) -> Gcc {
+        self.optimize = optimize;
+        self
+    }
+
+    pub fn set_profile(mut self, profile: bool) -> Gcc {
+        self.profile = profile;
         self
     }
 
     pub fn add_flag<S: Str>(mut self, flag: S) -> Gcc {
-        self.flags.push(flag.as_slice().to_owned());
+        self.flags.push(flag.into_owned());
         self
     }
 
@@ -112,7 +154,22 @@ impl Gcc {
 
 impl IntoFuture<Path> for Gcc {
     fn into_future(self) -> Future<Path> {
-        let Gcc { ctx, exe, dst, srcs, includes, libs, flags } = self;
+        let Gcc {
+            ctx,
+            exe,
+            dst,
+            srcs,
+            includes,
+            libs,
+            mut external_libs,
+            mut libpaths,
+            macros,
+            warnings,
+            debug,
+            profile,
+            optimize,
+            flags
+        } = self;
 
         assert!(!srcs.is_empty());
 
@@ -128,13 +185,11 @@ impl IntoFuture<Path> for Gcc {
             call.push_input_path(include).unwrap();
         }
 
-        let mut new_libs: ~[~str] = ~[];
-        let mut new_libpaths: ~[Path] = ~[];
-
+        // We need to extract the relative lib info from a lib path
         for lib in libs.move_iter() {
             prep.declare_input_path(lib.clone()).unwrap();
 
-            new_libpaths.push(lib.dir_path());
+            libpaths.push(lib.dir_path());
 
             let name = lib.filename_str().unwrap();
 
@@ -143,17 +198,31 @@ impl IntoFuture<Path> for Gcc {
 
             assert!(name.starts_with(prefix) && name.ends_with(suffix));
 
-            new_libs.push(name.slice(prefix.len(), suffix.len()).to_owned());
+            external_libs.push(name.slice(prefix.len(), suffix.len()).to_owned());
         }
 
-        for libpath in new_libpaths.move_iter() {
+        for libpath in libpaths.move_iter() {
             call.push_str(~"-L");
             call.push_str(libpath.as_str().unwrap().to_owned());
         }
 
-        for lib in new_libs.move_iter() {
+        for lib in external_libs.move_iter() {
             call.push_str(~"-l");
             call.push_str(lib);
+        }
+
+        if debug { call.push_str(~"-g"); }
+        if optimize { call.push_str(~"-O2"); }
+        if profile { call.push_str(~"-pg"); }
+
+        for macro in macros.move_iter() {
+            call.push_str(~"-D");
+            call.push_str(macro);
+        }
+
+        for warning in warnings.move_iter() {
+            call.push_str(~"-W");
+            call.push_str(warning);
         }
 
         for flag in flags.move_iter() {
