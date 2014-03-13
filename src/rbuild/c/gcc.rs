@@ -9,17 +9,17 @@ use into_future::IntoFuture;
 
 #[deriving(Clone)]
 pub struct SharedBuilder {
-    ctx: Context,
-    exe: Path,
-    flags: ~[~str],
+    priv gcc: Gcc,
 }
 
 impl SharedBuilder {
     pub fn new<T: IntoPath>(ctx: Context, exe: T) -> SharedBuilder {
+        SharedBuilder::new_with(Gcc::new(ctx, exe))
+    }
+
+    pub fn new_with(gcc: Gcc) -> SharedBuilder {
         SharedBuilder {
-            ctx: ctx,
-            exe: exe.into_path(),
-            flags: ~[],
+            gcc: gcc,
         }
     }
 
@@ -27,33 +27,37 @@ impl SharedBuilder {
         let src = src.into_future().unwrap();
         let dst = src.with_extension("o");
 
-        Gcc::new(self.ctx.clone(), self.exe.clone(), dst)
+        self.gcc.clone()
+            .set_dst(dst)
             .add_src(src)
             .add_flag(~"-c")
             .add_flag(~"-fPIC")
     }
 
-    pub fn link_lib<'a, T: IntoPath>(&self, dst: T) -> Gcc {
+    pub fn link_lib<T: IntoPath>(&self, dst: T) -> Gcc {
         let mut dst = dst.into_path();
 
         // change the filename to be "lib${filename}.dylib".
         let filename = format!("lib{}.dylib", dst.filename_str().unwrap());
         dst.set_filename(filename);
 
-        Gcc::new(self.ctx.clone(), self.exe.clone(), dst)
+        self.gcc.clone()
+            .set_dst(dst)
             .add_flag(~"-fPIC")
             .add_flag(~"-dynamiclib")
     }
 
-    pub fn link_exe<'a, T: IntoPath>(&self, dst: T) -> Gcc {
-        Gcc::new(self.ctx.clone(), self.exe.clone(), dst.into_path())
+    pub fn link_exe<T: IntoPath>(&self, dst: T) -> Gcc {
+        self.gcc.clone()
+            .set_dst(dst)
     }
 }
 
+#[deriving(Clone)]
 pub struct Gcc {
     priv ctx: Context,
     priv exe: Path,
-    priv dst: Path,
+    priv dst: Option<Path>,
     priv srcs: ~[Path],
     priv includes: ~[Path],
     priv libs: ~[Path],
@@ -68,16 +72,11 @@ pub struct Gcc {
 }
 
 impl Gcc {
-    pub fn new(ctx: Context, exe: Path, mut dst: Path) -> Gcc {
-        // Make sure we write the output in the build/ directory.
-        if !dst.is_ancestor_of(&ctx.root) {
-            dst = ctx.root.join(dst);
-        }
-
+    pub fn new<T: IntoPath>(ctx: Context, exe: T) -> Gcc {
         Gcc {
             ctx: ctx,
-            exe: exe,
-            dst: dst,
+            exe: exe.into_path(),
+            dst: None,
             srcs: ~[],
             includes: ~[],
             libs: ~[],
@@ -90,6 +89,18 @@ impl Gcc {
             optimize: false,
             flags: ~[],
         }
+    }
+
+    pub fn set_dst<T: IntoPath>(mut self, dst: T) -> Gcc {
+        let mut dst = dst.into_path();
+
+        // Make sure we write the output in the build/ directory.
+        if !dst.is_ancestor_of(&self.ctx.root) {
+            dst = self.ctx.root.join(dst);
+        }
+
+        self.dst = Some(dst);
+        self
     }
 
     pub fn add_src<T: IntoFuture<Path>>(mut self, src: T) -> Gcc {
@@ -174,11 +185,16 @@ impl IntoFuture<Path> for Gcc {
         assert!(!srcs.is_empty());
 
         let mut prep = ctx.prep("Call");
-
         let mut call = Call::new(exe.clone()).unwrap();
 
-        call.push_str(~"-o");
-        call.push_output_path(dst.clone());
+        let dst = match dst {
+            Some(dst) => {
+                call.push_str(~"-o");
+                call.push_output_path(dst.clone());
+                dst
+            }
+            None => { Path::new("") }
+        };
 
         for include in includes.move_iter() {
             call.push_str(~"-I");
