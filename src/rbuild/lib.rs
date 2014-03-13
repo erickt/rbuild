@@ -7,7 +7,7 @@ extern crate extra;
 extern crate serialize;
 extern crate sync;
 
-pub mod c;
+pub mod builders;
 pub mod context;
 pub mod into_future;
 pub mod into_path;
