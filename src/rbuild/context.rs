@@ -3,6 +3,7 @@ use std::io::MemWriter;
 use std::str;
 use std::hash;
 use std::num::ToStrRadix;
+use std::vec_ng::Vec;
 use collections::TreeMap;
 use serialize::json;
 use serialize::{Encodable, Decodable};
@@ -156,7 +157,7 @@ impl InputPath {
 #[deriving(Encodable, Decodable)]
 pub struct Call {
     priv prog: CallArg,
-    priv args: ~[CallArg],
+    priv args: Vec<CallArg>,
 }
 
 impl Call {
@@ -164,7 +165,7 @@ impl Call {
         let prog = try!(InputPath::new(prog));
         Ok(Call {
             prog: InputPath(prog),
-            args: ~[],
+            args: Vec::new(),
         })
     }
 
@@ -187,7 +188,7 @@ impl Call {
         self.args.iter().all(|arg| arg.is_fresh())
     }
 
-    pub fn cmd(&self) -> (~str, ~[~str]) {
+    pub fn cmd(&self) -> (~str, Vec<~str>) {
         fn f(arg: &CallArg) -> ~str {
             match *arg {
                 Str(ref s) => s.clone(),

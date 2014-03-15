@@ -1,6 +1,7 @@
 use std::io;
 use std::io::process::Process;
 use std::io::fs;
+use std::vec_ng::Vec;
 use sync::Future;
 
 use builders::ar::Ar;
@@ -220,19 +221,19 @@ pub struct Gcc {
     priv dst_prefix: Option<&'static str>,
     priv dst_suffix: Option<&'static str>,
     priv dst: Option<Path>,
-    priv srcs: ~[Path],
-    priv includes: ~[Path],
+    priv srcs: Vec<Path>,
+    priv includes: Vec<Path>,
     priv lib_prefix: &'static str,
     priv lib_suffix: &'static str,
-    priv libs: ~[Path],
-    priv external_libs: ~[~str],
-    priv libpaths: ~[Path],
-    priv macros: ~[~str],
-    priv warnings: ~[~str],
+    priv libs: Vec<Path>,
+    priv external_libs: Vec<~str>,
+    priv libpaths: Vec<Path>,
+    priv macros: Vec<~str>,
+    priv warnings: Vec<~str>,
     priv debug: bool,
     priv profile: bool,
     priv optimize: bool,
-    priv flags: ~[~str],
+    priv flags: Vec<~str>,
 }
 
 impl Gcc {
@@ -248,19 +249,19 @@ impl Gcc {
             dst_prefix: None,
             dst_suffix: None,
             dst: None,
-            srcs: ~[],
-            includes: ~[],
+            srcs: Vec::new(),
+            includes: Vec::new(),
             lib_prefix: lib_prefix,
             lib_suffix: lib_suffix,
-            libs: ~[],
-            external_libs: ~[],
-            libpaths: ~[],
-            macros: ~[],
-            warnings: ~[],
+            libs: Vec::new(),
+            external_libs: Vec::new(),
+            libpaths: Vec::new(),
+            macros: Vec::new(),
+            warnings: Vec::new(),
             debug: false,
             profile: false,
             optimize: false,
-            flags: ~[],
+            flags: Vec::new(),
         }
     }
 
@@ -452,7 +453,7 @@ impl IntoFuture<Path> for Gcc {
             println!(" -> {}", dst.display());
             println!("{} {}", prog, args);
 
-            let mut process = Process::new(prog, args).unwrap();
+            let mut process = Process::new(prog, args.as_slice()).unwrap();
             let status = process.wait();
 
             if !status.success() {

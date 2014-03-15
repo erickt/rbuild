@@ -1,6 +1,7 @@
 use std::io;
 use std::io::process::Process;
 use std::io::fs;
+use std::vec_ng::Vec;
 use sync::Future;
 
 use context::{Context, Call};
@@ -15,20 +16,22 @@ pub struct Ar {
     priv dst_prefix: Option<&'static str>,
     priv dst_suffix: Option<&'static str>,
     priv dst: Option<Path>,
-    priv srcs: ~[Path],
-    priv flags: ~[~str],
+    priv srcs: Vec<Path>,
+    priv flags: Vec<~str>,
 }
 
 impl Ar {
     pub fn new<T: IntoPath>(ctx: Context, exe: T) -> Ar {
+        let mut flags = Vec::new();
+        flags.push(~"-rc");
         Ar {
             ctx: ctx,
             exe: exe.into_path(),
             dst_prefix: None,
             dst_suffix: None,
             dst: None,
-            srcs: ~[],
-            flags: ~[~"-rc"],
+            srcs: Vec::new(),
+            flags: flags,
         }
     }
 
@@ -115,7 +118,7 @@ impl IntoFuture<Path> for Ar {
             println!(" -> {}", dst.display());
             println!("{} {}", prog, args);
 
-            let mut process = Process::new(prog, args).unwrap();
+            let mut process = Process::new(prog, args.as_slice()).unwrap();
             let status = process.wait();
 
             if !status.success() {

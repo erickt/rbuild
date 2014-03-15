@@ -16,6 +16,7 @@ use std::io::{File, MemWriter};
 use std::io;
 use std::str;
 use std::str::IntoMaybeOwned;
+use std::vec_ng::Vec;
 use collections::TreeMap;
 use serialize::json;
 use serialize::json::ToJson;
@@ -309,8 +310,8 @@ impl Exec {
     }
 
     // returns pairs of (kind, name)
-    pub fn lookup_discovered_inputs(&self) -> ~[(~str, ~str)] {
-        let mut rs = ~[];
+    pub fn lookup_discovered_inputs(&self) -> Vec<(~str, ~str)> {
+        let mut rs = Vec::new();
         let WorkMap(ref discovered_inputs) = self.discovered_inputs;
         for (k, v) in discovered_inputs.iter() {
             let KindMap(ref vmap) = *v;
@@ -331,8 +332,8 @@ impl Prep {
         }
     }
 
-    pub fn lookup_declared_inputs(&self) -> ~[~str] {
-        let mut rs = ~[];
+    pub fn lookup_declared_inputs(&self) -> Vec<~str> {
+        let mut rs = Vec::new();
         let WorkMap(ref declared_inputs) = self.declared_inputs;
         for (_, v) in declared_inputs.iter() {
             let KindMap(ref vmap) = *v;
