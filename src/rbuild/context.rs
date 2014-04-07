@@ -1,9 +1,8 @@
-use std::io::{IoResult, File};
+use std::io::{File, IoError, IoResult};
 use std::io::MemWriter;
 use std::str;
 use std::hash;
 use std::num::ToStrRadix;
-use std::vec_ng::Vec;
 use collections::TreeMap;
 use serialize::json;
 use serialize::{Encodable, Decodable};
@@ -15,7 +14,7 @@ use workcache;
 #[deriving(Clone)]
 pub struct Context {
     ctx: ::workcache::Context,
-    root: Path,
+    pub root: Path,
 }
 
 impl Context {
@@ -34,6 +33,8 @@ impl Context {
         let mut freshness = TreeMap::new();
         freshness.insert(~"Call", call_is_fresh);
         freshness.insert(~"InputPath", input_path_is_fresh);
+        freshness.insert(~"OutputPath", output_path_is_fresh);
+        freshness.insert(~"value", value_is_fresh);
 
         let ctx = workcache::Context::new_with_freshness(db, logger, cfg, freshness);
 
@@ -55,13 +56,13 @@ impl Context {
 }
 
 pub struct Prep {
-    priv prep: workcache::Prep,
+    prep: workcache::Prep,
 }
 
 impl Prep {
     pub fn declare_input<
         'a,
-        T: Encodable<json::Encoder<'a>>
+        T: Encodable<json::Encoder<'a>, IoError>
     >(&mut self, kind: &str, name: &str, value: &T) {
         self.prep.declare_input(kind, name, json_encode(value))
     }
@@ -78,8 +79,8 @@ impl Prep {
 
     pub fn exec<
         'a,
-        T: Send + Encodable<json::Encoder<'a>> + Decodable<json::Decoder>
-    >(self, blk: proc(&mut Exec) -> T) -> Future<T> {
+        T: Send + Encodable<json::Encoder<'a>, IoError> + Decodable<json::Decoder, json::Error>
+    >(self, blk: proc:Send(&mut Exec) -> T) -> Future<T> {
         self.prep.exec(proc(exec) {
             let mut exec = Exec { exec: exec };
             blk(&mut exec)
@@ -88,30 +89,31 @@ impl Prep {
 }
 
 pub struct Exec<'a> {
-    priv exec: &'a mut workcache::Exec,
+    exec: &'a mut workcache::Exec,
 }
 
 impl<'a> Exec<'a> {
     pub fn discover_input<
-        T: Encodable<json::Encoder<'a>>
+        T: Encodable<json::Encoder<'a>, IoError>
     >(&mut self, kind: &str, name: &str, value: &T) {
         self.exec.discover_input(kind, name, json_encode(value))
     }
 
-    pub fn discover_input_path(&mut self, name: &str, path: Path) -> IoResult<()> {
-        let path = try!(InputPath::new(path));
-        self.discover_input("path", name, &path);
+    pub fn discover_input_path(&mut self, name: &str, path: &Path) -> IoResult<()> {
+        let path = try!(InputPath::new(path.clone()));
+        self.discover_input("InputPath", name, &path);
         Ok(())
     }
 
     pub fn discover_output<
-        T: Encodable<json::Encoder<'a>>
+        T: Encodable<json::Encoder<'a>, IoError>
     >(&mut self, kind: &str, name: &str, value: &T) {
         self.exec.discover_output(kind, name, json_encode(value))
     }
 
-    pub fn discover_output_path(&mut self, name: &str, path: Path) {
-        self.discover_output("path", name, &path)
+    pub fn discover_output_path(&mut self, name: &str, path: &Path) {
+        let path = OutputPath::new(path.clone());
+        self.discover_output("OutputPath", name, &path)
     }
 }
 
@@ -155,9 +157,26 @@ impl InputPath {
 }
 
 #[deriving(Encodable, Decodable)]
+struct OutputPath {
+    path: Path,
+}
+
+impl OutputPath {
+    fn new(path: Path) -> OutputPath {
+        OutputPath {
+            path: path,
+        }
+    }
+
+    fn is_fresh(&self) -> bool {
+        self.path.exists()
+    }
+}
+
+#[deriving(Encodable, Decodable)]
 pub struct Call {
-    priv prog: CallArg,
-    priv args: Vec<CallArg>,
+    prog: CallArg,
+    args: Vec<CallArg>,
 }
 
 impl Call {
@@ -221,17 +240,17 @@ impl CallArg {
     }
 }
 
-fn json_encode<'a, T:Encodable<json::Encoder<'a>>>(t: &T) -> ~str {
+fn json_encode<'a, T: Encodable<json::Encoder<'a>, IoError>>(t: &T) -> ~str {
     let mut writer = MemWriter::new();
     let mut encoder = json::Encoder::new(&mut writer);
-    t.encode(&mut encoder);
+    t.encode(&mut encoder).unwrap();
     str::from_utf8_owned(writer.unwrap()).unwrap()
 }
 
-fn json_decode<T:Decodable<json::Decoder>>(s: &str) -> T {
+fn json_decode<T: Decodable<json::Decoder, json::Error>>(s: &str) -> T {
     let j = json::from_str(s).unwrap();
     let mut decoder = json::Decoder::new(j);
-    Decodable::decode(&mut decoder)
+    Decodable::decode(&mut decoder).unwrap()
 }
 
 fn call_is_fresh(_name: &str, value: &str) -> bool {
@@ -244,4 +263,14 @@ fn input_path_is_fresh(_name: &str, value: &str) -> bool {
     let path: InputPath = json_decode(value);
 
     path.is_fresh()
+}
+
+fn output_path_is_fresh(_name: &str, value: &str) -> bool {
+    let path: OutputPath = json_decode(value);
+
+    path.is_fresh()
+}
+
+fn value_is_fresh(_name: &str, _value: &str) -> bool {
+    true
 }

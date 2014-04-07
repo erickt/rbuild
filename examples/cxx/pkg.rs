@@ -1,7 +1,7 @@
 extern crate rbuild;
 
 use rbuild::context::Context;
-use rbuild::builders::c::gcc::{StaticBuilder, SharedBuilder};
+use rbuild::builders::c::{StaticBuilder, SharedBuilder};
 
 fn main() {
     let ctx = Context::new();

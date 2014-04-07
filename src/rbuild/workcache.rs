@@ -8,20 +8,19 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[allow(missing_doc)];
-#[allow(visible_private_types)];
+#![allow(missing_doc)]
+#![allow(visible_private_types)]
 
-use std::cell::RefCell;
-use std::io::{File, MemWriter};
-use std::io;
-use std::str;
-use std::str::IntoMaybeOwned;
-use std::vec_ng::Vec;
-use collections::TreeMap;
 use serialize::json;
 use serialize::json::ToJson;
 use serialize::{Encoder, Encodable, Decoder, Decodable};
-use sync::{Arc, RWArc, Future};
+use sync::{Arc, RWLock, Future};
+use collections::TreeMap;
+use std::str;
+use std::io;
+use std::io::{File, IoError, MemWriter};
+use std::cell::RefCell;
+use std::str::IntoMaybeOwned;
 
 /**
 *
@@ -137,9 +136,9 @@ impl WorkMap {
 }
 
 pub struct Database {
-    priv db_filename: Path,
-    priv db_cache: TreeMap<~str, ~str>,
-    priv db_dirty: bool
+    db_filename: Path,
+    db_cache: TreeMap<~str, ~str>,
+    pub db_dirty: bool,
 }
 
 impl Database {
@@ -155,7 +154,7 @@ impl Database {
         db
     }
 
-    fn prepare<'a, T: Decodable<json::Decoder>>(
+    fn prepare<'a, T: Decodable<json::Decoder, json::Error>>(
                    &self,
                    fn_name: &str,
                    declared_inputs: &WorkMap)
@@ -166,7 +165,7 @@ impl Database {
         })
     }
 
-    fn cache<'a, T: Encodable<json::Encoder<'a>>>(
+    fn cache<'a, T: Encodable<json::Encoder<'a>, IoError>>(
                  &mut self,
                  fn_name: &str,
                  declared_inputs: &WorkMap,
@@ -202,7 +201,7 @@ impl Database {
                                     self.db_filename.display(), e.to_str()),
                     Ok(r) => {
                         let mut decoder = json::Decoder::new(r);
-                        self.db_cache = Decodable::decode(&mut decoder);
+                        self.db_cache = Decodable::decode(&mut decoder).unwrap();
                     }
                 }
             }
@@ -239,41 +238,41 @@ pub type FreshnessMap = TreeMap<~str, fn(name: &str, value: &str) -> bool>;
 
 #[deriving(Clone)]
 pub struct Context {
-    priv db: RWArc<Database>,
-    priv logger: RWArc<Logger>,
-    priv cfg: Arc<json::Object>,
+    pub db: Arc<RWLock<Database>>,
+    logger: Arc<Logger>,
+    cfg: Arc<json::Object>,
     /// Map from kinds (source, exe, url, etc.) to a freshness function.
     /// The freshness function takes a name (e.g. file path) and value
     /// (e.g. hash of file contents) and determines whether it's up-to-date.
     /// For example, in the file case, this would read the file off disk,
     /// hash it, and return the result of comparing the given hash and the
     /// read hash for equality.
-    priv freshness: Arc<FreshnessMap>
+    freshness: Arc<FreshnessMap>
 }
 
 pub struct Prep {
-    priv ctxt: Context,
-    priv fn_name: str::SendStr,
-    priv declared_inputs: WorkMap,
+    ctxt: Context,
+    fn_name: str::SendStr,
+    declared_inputs: WorkMap,
 }
 
 pub struct Exec {
-    priv discovered_inputs: WorkMap,
-    priv discovered_outputs: WorkMap
+    discovered_inputs: WorkMap,
+    discovered_outputs: WorkMap
 }
 
-fn json_encode<'a, T:Encodable<json::Encoder<'a>>>(t: &T) -> ~str {
+fn json_encode<'a, T: Encodable<json::Encoder<'a>, IoError>>(t: &T) -> ~str {
     let mut writer = MemWriter::new();
     let mut encoder = json::Encoder::new(&mut writer);
-    t.encode(&mut encoder);
+    t.encode(&mut encoder).unwrap();
     str::from_utf8_owned(writer.unwrap()).unwrap()
 }
 
 // FIXME(#5121)
-fn json_decode<T:Decodable<json::Decoder>>(s: &str) -> T {
+fn json_decode<T: Decodable<json::Decoder, json::Error>>(s: &str) -> T {
     let j = json::from_str(s).unwrap();
     let mut decoder = json::Decoder::new(j);
-    Decodable::decode(&mut decoder)
+    Decodable::decode(&mut decoder).unwrap()
 }
 
 impl Context {
@@ -286,8 +285,8 @@ impl Context {
                               cfg: json::Object,
                               freshness: FreshnessMap) -> Context {
         Context {
-            db: RWArc::new(db),
-            logger: RWArc::new(logger),
+            db: Arc::new(RWLock::new(db)),
+            logger: Arc::new(logger),
             cfg: Arc::new(cfg),
             freshness: Arc::new(freshness),
         }
@@ -353,19 +352,19 @@ impl Prep {
 
     fn is_fresh(&self, cat: &str, kind: &str, name: &str, value: &str) -> bool {
         let k = kind.to_owned();
-        let f = self.ctxt.freshness.get().find(&k);
+        let f = self.ctxt.freshness.find(&k);
         debug!("freshness for: {}/{}/{}/{}", cat, kind, name, value)
         let fresh = match f {
             None => fail!("missing freshness-function for '{}'", kind),
             Some(f) => (*f)(name, value),
         };
-        self.ctxt.logger.write(|lg| {
-            if fresh {
-                lg.info(format!("{} {}:{} is fresh", cat, kind, name));
-            } else {
-                lg.info(format!("{} {}:{} is not fresh", cat, kind, name))
-            }
-        });
+
+        if fresh {
+            self.ctxt.logger.info(format!("{} {}:{} is fresh", cat, kind, name));
+        } else {
+            self.ctxt.logger.info(format!("{} {}:{} is not fresh", cat, kind, name));
+        }
+
         fresh
     }
 
@@ -386,13 +385,13 @@ impl Prep {
 
     pub fn exec<
         'a,
-        T:Send + Encodable<json::Encoder<'a>> + Decodable<json::Decoder> // FIXME(#5121)
-    >(self, blk: proc(&mut Exec) -> T) -> Future<T> {
+        T: Send + Encodable<json::Encoder<'a>, IoError> + Decodable<json::Decoder, json::Error> // FIXME(#5121)
+    >(self, blk: proc:Send(&mut Exec) -> T) -> Future<T> {
         debug!("exec_work: looking up {} and {:?}", self.fn_name, self.declared_inputs);
 
-        let cached: Option<(WorkMap, WorkMap, T)> = self.ctxt.db.read(|db| {
-            db.prepare(self.fn_name.as_slice(), &self.declared_inputs)
-        });
+        let cached: Option<(WorkMap, WorkMap, T)> = self.ctxt.db.read().prepare(
+            self.fn_name.as_slice(),
+            &self.declared_inputs);
 
         match cached {
             Some((disc_in, disc_out, res)) => {
@@ -428,15 +427,16 @@ impl Prep {
 
         Future::from_fn(proc() {
             let prep = prep.unwrap();
-            let (exe, v) = future.unwrap();
-            prep.ctxt.db.write(|db| {
-                db.cache(prep.fn_name.as_slice(),
-                         &prep.declared_inputs,
-                         &exe.discovered_inputs,
-                         &exe.discovered_outputs,
-                         &v)
-            });
-            v
+            let (exe, value) = future.unwrap();
+
+            prep.ctxt.db.write().cache(
+                prep.fn_name.as_slice(),
+                &prep.declared_inputs,
+                &exe.discovered_inputs,
+                &exe.discovered_outputs,
+                &value);
+
+            value
         })
     }
 }

@@ -1,7 +1,6 @@
 use std::io;
 use std::io::process::Process;
 use std::io::fs;
-use std::vec_ng::Vec;
 use sync::Future;
 
 use context::{Context, Call};
@@ -11,22 +10,29 @@ use path_util;
 
 #[deriving(Clone)]
 pub struct Ar {
-    priv ctx: Context,
-    priv exe: Path,
-    priv dst_prefix: Option<&'static str>,
-    priv dst_suffix: Option<&'static str>,
-    priv dst: Option<Path>,
-    priv srcs: Vec<Path>,
-    priv flags: Vec<~str>,
+    ctx: Context,
+    exe: Path,
+    dst_prefix: Option<&'static str>,
+    dst_suffix: Option<&'static str>,
+    dst: Option<Path>,
+    srcs: Vec<Path>,
+    flags: Vec<~str>,
 }
 
+static EXES: &'static [&'static str] = &["ar"];
+
 impl Ar {
-    pub fn new<T: IntoPath>(ctx: Context, exe: T) -> Ar {
+    pub fn new(ctx: Context) -> Ar {
+        let exe = path_util::find_program(ctx.clone(), EXES);
+        Ar::new_with(ctx, exe)
+    }
+
+    pub fn new_with<T: IntoFuture<Path>>(ctx: Context, exe: T) -> Ar {
         let mut flags = Vec::new();
         flags.push(~"-rc");
         Ar {
             ctx: ctx,
-            exe: exe.into_path(),
+            exe: exe.into_future().unwrap(),
             dst_prefix: None,
             dst_suffix: None,
             dst: None,

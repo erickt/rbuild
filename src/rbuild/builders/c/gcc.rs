@@ -1,243 +1,45 @@
 use std::io;
 use std::io::process::Process;
 use std::io::fs;
-use std::vec_ng::Vec;
 use sync::Future;
 
-use builders::ar::Ar;
 use context::{Context, Call};
 use into_path::IntoPath;
 use into_future::IntoFuture;
 use path_util;
 
-pub static COMPILE_SUFFIX: &'static str = "o";
-pub static LIB_PREFIX: &'static str = "lib";
-pub static STATIC_LIB_SUFFIX: &'static str = "a";
-pub static SHARED_LIB_SUFFIX: &'static str = "dylib";
-
-#[deriving(Clone)]
-pub struct StaticBuilder {
-    priv gcc: Gcc,
-    priv ar: Ar,
-}
-
-impl StaticBuilder {
-    pub fn new(ctx: Context) -> StaticBuilder {
-        StaticBuilder::new_with(ctx, "/usr/bin/gcc", "/usr/bin/ar")
-    }
-
-    pub fn new_with<T: Str, U: Str>(ctx: Context, gcc_exe: T, ar_exe: U) -> StaticBuilder {
-        let gcc = Gcc::new(
-            ctx.clone(),
-            gcc_exe.into_owned(),
-            LIB_PREFIX,
-            STATIC_LIB_SUFFIX);
-
-        let ar = Ar::new(ctx, ar_exe.into_owned());
-
-        StaticBuilder {
-            gcc: gcc,
-            ar: ar,
-        }
-    }
-
-    pub fn compile<T: IntoFuture<Path>>(&self, src: T) -> Gcc {
-        let src = src.into_future().unwrap();
-        let dst = src.with_extension(COMPILE_SUFFIX);
-
-        self.gcc.clone()
-            .set_dst(dst)
-            .set_dst_suffix(COMPILE_SUFFIX)
-            .add_src(src)
-            .add_flag(~"-c")
-    }
-
-    pub fn link_lib<T: IntoPath>(&self, dst: T) -> Ar {
-        self.ar.clone()
-            .set_dst(dst)
-            .set_dst_prefix(LIB_PREFIX)
-            .set_dst_suffix(STATIC_LIB_SUFFIX)
-    }
-
-    pub fn link_exe<T: IntoPath>(&self, dst: T) -> Gcc {
-        self.gcc.clone()
-            .set_dst(dst)
-    }
-
-    pub fn add_include<T: IntoFuture<Path>>(self, include: T) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_include(include), ar: ar }
-    }
-
-    pub fn add_lib<T: IntoFuture<Path>>(self, lib: T) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_lib(lib), ar: ar }
-    }
-
-    pub fn add_external_lib<T: Str>(self, lib: T) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_external_lib(lib), ar: ar }
-    }
-
-    pub fn add_libpath<T: IntoPath>(self, libpath: T) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_libpath(libpath), ar: ar }
-    }
-
-    pub fn add_macro<T: Str>(self, macro: T) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_macro(macro), ar: ar }
-    }
-
-    pub fn add_warning<T: Str>(self, warning: T) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_warning(warning), ar: ar }
-    }
-
-    pub fn set_debug(self, debug: bool) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.set_debug(debug), ar: ar }
-    }
-
-    pub fn set_optimize(self, optimize: bool) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.set_optimize(optimize), ar: ar }
-    }
-
-    pub fn set_profile(self, profile: bool) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.set_profile(profile), ar: ar }
-    }
-
-    pub fn add_flag<S: Str>(self, flag: S) -> StaticBuilder {
-        let StaticBuilder { gcc, ar } = self;
-        StaticBuilder { gcc: gcc.add_flag(flag), ar: ar }
-    }
-}
-
-#[deriving(Clone)]
-pub struct SharedBuilder {
-    priv gcc: Gcc,
-}
-
-impl SharedBuilder {
-    pub fn new(ctx: Context) -> SharedBuilder {
-        SharedBuilder::new_with(ctx, "/usr/bin/gcc")
-    }
-
-    pub fn new_with<T: Str>(ctx: Context, gcc_exe: T) -> SharedBuilder {
-        let gcc = Gcc::new(
-            ctx.clone(),
-            gcc_exe.into_owned(),
-            LIB_PREFIX,
-            SHARED_LIB_SUFFIX);
-
-        SharedBuilder {
-            gcc: gcc,
-        }
-    }
-
-    pub fn compile<T: IntoFuture<Path>>(&self, src: T) -> Gcc {
-        let src = src.into_future().unwrap();
-        let dst = src.with_extension(COMPILE_SUFFIX);
-
-        self.gcc.clone()
-            .set_dst(dst)
-            .set_dst_suffix(COMPILE_SUFFIX)
-            .add_src(src)
-            .add_flag(~"-c")
-            .add_flag(~"-fPIC")
-    }
-
-    pub fn link_lib<T: IntoPath>(&self, dst: T) -> Gcc {
-        self.gcc.clone()
-            .set_dst(dst)
-            .set_dst_prefix(LIB_PREFIX)
-            .set_dst_suffix(SHARED_LIB_SUFFIX)
-            .add_flag(~"-fPIC")
-            .add_flag(~"-dynamiclib")
-    }
-
-    pub fn link_exe<T: IntoPath>(&self, dst: T) -> Gcc {
-        self.gcc.clone()
-            .set_dst(dst)
-    }
-
-    pub fn add_include<T: IntoFuture<Path>>(self, include: T) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_include(include) }
-    }
-
-    pub fn add_lib<T: IntoFuture<Path>>(self, lib: T) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_lib(lib) }
-    }
-
-    pub fn add_external_lib<T: Str>(self, lib: T) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_external_lib(lib) }
-    }
-
-    pub fn add_libpath<T: IntoPath>(self, libpath: T) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_libpath(libpath) }
-    }
-
-    pub fn add_macro<T: Str>(self, macro: T) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_macro(macro) }
-    }
-
-    pub fn add_warning<T: Str>(self, warning: T) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_warning(warning) }
-    }
-
-    pub fn set_debug(self, debug: bool) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.set_debug(debug) }
-    }
-
-    pub fn set_optimize(self, optimize: bool) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.set_optimize(optimize) }
-    }
-
-    pub fn set_profile(self, profile: bool) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.set_profile(profile) }
-    }
-
-    pub fn add_flag<S: Str>(self, flag: S) -> SharedBuilder {
-        let SharedBuilder { gcc } = self;
-        SharedBuilder { gcc: gcc.add_flag(flag) }
-    }
-}
+pub static EXES: &'static [&'static str] = &'static ["gcc", "cc"];
 
 #[deriving(Clone)]
 pub struct Gcc {
-    priv ctx: Context,
-    priv exe: Path,
-    priv dst_prefix: Option<&'static str>,
-    priv dst_suffix: Option<&'static str>,
-    priv dst: Option<Path>,
-    priv srcs: Vec<Path>,
-    priv includes: Vec<Path>,
-    priv lib_prefix: &'static str,
-    priv lib_suffix: &'static str,
-    priv libs: Vec<Path>,
-    priv external_libs: Vec<~str>,
-    priv libpaths: Vec<Path>,
-    priv macros: Vec<~str>,
-    priv warnings: Vec<~str>,
-    priv debug: bool,
-    priv profile: bool,
-    priv optimize: bool,
-    priv flags: Vec<~str>,
+    ctx: Context,
+    exe: Path,
+    dst_prefix: Option<&'static str>,
+    dst_suffix: Option<&'static str>,
+    dst: Option<Path>,
+    srcs: Vec<Path>,
+    includes: Vec<Path>,
+    lib_prefix: &'static str,
+    lib_suffix: &'static str,
+    libs: Vec<Path>,
+    external_libs: Vec<~str>,
+    libpaths: Vec<Path>,
+    macros: Vec<~str>,
+    warnings: Vec<~str>,
+    debug: bool,
+    profile: bool,
+    optimize: bool,
+    flags: Vec<~str>,
 }
 
 impl Gcc {
-    pub fn new<T: IntoPath>(
+    pub fn new(ctx: Context, lib_prefix: &'static str, lib_suffix: &'static str) -> Gcc {
+        let exe = path_util::find_program(ctx.clone(), EXES);
+
+        Gcc::new_with(ctx, exe, lib_prefix, lib_suffix)
+    }
+
+    pub fn new_with<T: IntoFuture<Path>>(
         ctx: Context,
         exe: T,
         lib_prefix: &'static str,
@@ -245,7 +47,7 @@ impl Gcc {
     ) -> Gcc {
         Gcc {
             ctx: ctx,
-            exe: exe.into_path(),
+            exe: exe.into_future().unwrap(),
             dst_prefix: None,
             dst_suffix: None,
             dst: None,
