@@ -219,14 +219,15 @@ impl Drop for Database {
     }
 }
 
-pub struct Logger {
-    // FIXME #4432: Fill in
-    a: ()
-}
+pub struct Logger;
 
 impl Logger {
     pub fn new() -> Logger {
-        Logger { a: () }
+        Logger
+    }
+
+    pub fn debug(&self, msg: &str) {
+        debug!("{}", msg);
     }
 
     pub fn info(&self, msg: &str) {
@@ -239,7 +240,7 @@ pub type FreshnessMap = TreeMap<~str, fn(name: &str, value: &str) -> bool>;
 #[deriving(Clone)]
 pub struct Context {
     pub db: Arc<RWLock<Database>>,
-    logger: Arc<Logger>,
+    pub logger: Arc<Logger>,
     cfg: Arc<json::Object>,
     /// Map from kinds (source, exe, url, etc.) to a freshness function.
     /// The freshness function takes a name (e.g. file path) and value
@@ -265,7 +266,7 @@ fn json_encode<'a, T: Encodable<json::Encoder<'a>, IoError>>(t: &T) -> ~str {
     let mut writer = MemWriter::new();
     let mut encoder = json::Encoder::new(&mut writer);
     t.encode(&mut encoder).unwrap();
-    str::from_utf8_owned(writer.unwrap()).unwrap()
+    str::from_utf8(writer.unwrap().as_slice()).unwrap().to_owned()
 }
 
 // FIXME(#5121)
@@ -360,9 +361,9 @@ impl Prep {
         };
 
         if fresh {
-            self.ctxt.logger.info(format!("{} {}:{} is fresh", cat, kind, name));
+            self.ctxt.logger.debug(format!("{} {}:{} is fresh", cat, kind, name));
         } else {
-            self.ctxt.logger.info(format!("{} {}:{} is not fresh", cat, kind, name));
+            self.ctxt.logger.debug(format!("{} {}:{} is not fresh", cat, kind, name));
         }
 
         fresh

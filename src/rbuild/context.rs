@@ -9,6 +9,7 @@ use serialize::{Encodable, Decodable};
 use sync::Future;
 
 use into_path::IntoPath;
+use process_builder::ProcessBuilder;
 use workcache;
 
 #[deriving(Clone)]
@@ -115,6 +116,14 @@ impl<'a> Exec<'a> {
         let path = OutputPath::new(path.clone());
         self.discover_output("OutputPath", name, &path)
     }
+
+    pub fn process_builder<'a>(
+        &mut self,
+        program: &'a str,
+        args: &'a [~str]
+    ) -> ProcessBuilder<'a> {
+        ProcessBuilder::new(program, args)
+    }
 }
 
 /// Hashes the path contents
@@ -123,7 +132,7 @@ fn digest_path(path: &Path) -> IoResult<~str> {
     let bytes = try!(file.read_to_end());
     let digest = hash::hash(&bytes);
 
-    println!("digesting: {} {}", path.display(), digest);
+    debug!("digesting: {} {}", path.display(), digest);
 
     Ok(digest.to_str_radix(16))
 }
@@ -244,7 +253,7 @@ fn json_encode<'a, T: Encodable<json::Encoder<'a>, IoError>>(t: &T) -> ~str {
     let mut writer = MemWriter::new();
     let mut encoder = json::Encoder::new(&mut writer);
     t.encode(&mut encoder).unwrap();
-    str::from_utf8_owned(writer.unwrap()).unwrap()
+    str::from_utf8(writer.unwrap().as_slice()).unwrap().to_owned()
 }
 
 fn json_decode<T: Decodable<json::Decoder, json::Error>>(s: &str) -> T {

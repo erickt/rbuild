@@ -1,5 +1,4 @@
 use std::io;
-use std::io::process::Process;
 use std::io::fs;
 use sync::Future;
 
@@ -109,23 +108,19 @@ impl IntoFuture<Path> for Ar {
         let mut prep = ctx.prep("Call");
         prep.declare_call(&call);
 
-        prep.exec(proc(_exec) {
+        prep.exec(proc(exec) {
             let (prog, args) = call.cmd();
-
-            print!("{}:", exe.display());
-
-            for src in srcs.iter() {
-                print!(" {}", src.display());
-            }
 
             // Make sure the parent directories exist.
             fs::mkdir_recursive(&dst.dir_path(), io::UserDir).unwrap();
 
-            println!(" -> {}", dst.display());
-            println!("{} {}", prog, args);
-
-            let mut process = Process::new(prog, args.as_slice()).unwrap();
-            let status = process.wait();
+            let status = exec.process_builder(prog, args.as_slice())
+                .description(exe.filename_display())
+                .msg(dst.display())
+                .msg("<-")
+                .msgs(srcs.iter().map(|src| src.display()))
+                .run()
+                .unwrap();
 
             if !status.success() {
                 fail!("command failed");
