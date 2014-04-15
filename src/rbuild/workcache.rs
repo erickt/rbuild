@@ -387,7 +387,7 @@ impl Prep {
     pub fn exec<
         'a,
         T: Send + Encodable<json::Encoder<'a>, IoError> + Decodable<json::Decoder, json::Error> // FIXME(#5121)
-    >(self, blk: proc:Send(&mut Exec) -> T) -> Future<T> {
+    >(self, blk: proc(&mut Exec):Send -> T) -> Future<T> {
         debug!("exec_work: looking up {} and {:?}", self.fn_name, self.declared_inputs);
 
         let cached: Option<(WorkMap, WorkMap, T)> = self.ctxt.db.read().prepare(

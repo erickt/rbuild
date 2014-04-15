@@ -81,7 +81,7 @@ impl Prep {
     pub fn exec<
         'a,
         T: Send + Encodable<json::Encoder<'a>, IoError> + Decodable<json::Decoder, json::Error>
-    >(self, blk: proc:Send(&mut Exec) -> T) -> Future<T> {
+    >(self, blk: proc(&mut Exec):Send -> T) -> Future<T> {
         self.prep.exec(proc(exec) {
             let mut exec = Exec { exec: exec };
             blk(&mut exec)
